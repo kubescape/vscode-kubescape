@@ -1,0 +1,108 @@
+{
+  "name": "kubescape",
+  "preview": true,
+  "displayName": "Kubescape",
+  "description": "Kubescape extension for vscode",
+  "author": {
+    "name": "Kubescape Team at Armo"
+  },
+  "license": "Apache",
+  "icon": "images/logo.png",
+  "version": "0.0.1",
+  "publisher": "armosec",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/armosec/vscode-kubescape"
+  },
+  "bugs": {
+    "url": "https://github.com/armosec/vscode-kubescape/issues"
+  },
+  "categories": [
+    "Linters"
+  ],
+  "keywords": [
+    "container",
+    "kubernetes",
+    "kubescape"
+  ],
+  "activationEvents": [
+    "onLanguage:yaml",
+    "onCommand:kubescape.doctor",
+    "onCommand:kubescape.scan_yaml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "kubescape.doctor",
+        "title": "Kubescape Doctor"
+      },
+      {
+        "command": "kubescape.scanYaml",
+        "title": "Kubescape Scan YAML"
+      }
+    ],
+    "configuration": {
+      "type" : "object",
+      "title": "Kubescape",
+      "properties": {
+        "kubescape.dirPath": {
+          "type": "string",
+          "default": "$HOME/.kubescape/",
+          "description": "The path in which kubescape should be installed"
+        },
+        "kubescape.scanOnSave" : {
+          "type": "string",
+          "enum": [
+            "all",
+            "yaml",
+            "none"
+          ],
+          "default" : "all",
+          "description": "Run analysis of kubescape when a document is being saved",
+          "scope": "resource"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src --ext ts",
+    "test": "node ./out/test/runTest.js"
+  },
+  "extensionDependencies": [
+    "vscode.yaml"
+  ],
+  "devDependencies": {
+    "@types/glob": "^7.1.4",
+    "@types/mocha": "^9.0.0",
+    "@types/node": "14.x",
+    "@types/vscode": "^1.60.0",
+    "@typescript-eslint/eslint-plugin": "^4.31.1",
+    "@typescript-eslint/parser": "^4.31.1",
+    "@vscode/test-electron": "^1.6.2",
+    "eslint": "^7.32.0",
+    "glob": "^7.1.7",
+    "mocha": "^9.1.1",
+    "typescript": "^4.4.3"
+  },
+  "config": {
+    "platformPackages": {
+      "url": "@PLATFORM_PACKAGE_URL@",
+      "platforms": {
+        "linux": "kubescape-ubuntu-latest",
+        "darvin": "kubescape-macos-latest",
+        "win32": "kubescape-windows-latest"
+      }
+    }
+  },
+  "dependencies": {
+    "axios": "^0.21.0"
+  }
+}
