@@ -29,9 +29,7 @@
     "kubescape"
   ],
   "activationEvents": [
-    "onLanguage:yaml",
-    "onCommand:kubescape.doctor",
-    "onCommand:kubescape.scan_yaml"
+    "onLanguage:yaml"
   ],
   "main": "./out/extension.js",
   "contributes": {
