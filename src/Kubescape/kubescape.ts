@@ -44,8 +44,8 @@ export async function scanYaml() {
         return
     }
 
-    if (!currentFile.document.fileName.includes(".yaml")) {
-        logger.logError("Not an YAML configuration file", true);
+    if (currentFile.document.languageId !== "yaml") {
+        logger.logError("Not an YAML configuration file");
         return;
     }
 
