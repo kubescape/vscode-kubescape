@@ -95,17 +95,50 @@ function processKubescapeResult(res : any) {
     }
 }
 
-export async function kubescapeScanYaml(yamlPath : string, framework : string) {
+export async function kubescapeScanYaml(yamlPath : string, framework : string, displayOutput : boolean = false) {
     let cmd = `${install.kubescapeBinaryInfo.location} scan framework ${framework} ${yamlPath} --format json`
-    exec(cmd, 
-    async (err, stdout, stderr) =>{
-        if (err) {
-            console.log(stderr)
-        } else {
-            let res = parseJsonSafe(stdout)
-            if (res) {
-                processKubescapeResult(res)
-            }
-        }
-    })
+
+    if (displayOutput) {
+        vscode.window.withProgress({
+            location : vscode.ProgressLocation.Notification,
+            title : "Scanning",
+            cancellable : false
+        },() => {
+            return new Promise<void>(resolve=> {
+                exec(cmd,
+                    async (err, stdout, stderr) => {
+                        if (err) {
+                            console.log(stderr)
+                        } else {
+                            let res = parseJsonSafe(stdout)
+                            if (res) {
+                                processKubescapeResult(res)
+                            }
+                        }
+
+                        const uri = vscode.Uri.parse('untitled:' + "Result");
+                        const doc = await vscode.workspace.openTextDocument(uri); // calls back into the provider
+                        let editor = await vscode.window.showTextDocument(doc, { preview: false });
+                        editor.edit((e) => {
+                            e.insert(new vscode.Position(0, 0), stdout)
+                        })
+
+                        resolve()
+                    })
+            })
+        })
+    } else {
+        exec(cmd,
+            async (err, stdout, stderr) => {
+                if (err) {
+                    console.log(stderr)
+                } else {
+                    let res = parseJsonSafe(stdout)
+                    if (res) {
+                        processKubescapeResult(res)
+                    }
+                }
+
+            })
+    }
 }

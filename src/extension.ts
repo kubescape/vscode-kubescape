@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 
 import * as install from './Kubescape/install'
 import * as kubescape from './Kubescape/kubescape'
+import * as scan from './Kubescape/scan'
 import * as contextHelper from './utils/context'
 import * as kubescapeConfig from './Kubescape/config'
 
@@ -44,7 +45,7 @@ function addOnSaveTextDocumentListeners(ctx: vscode.ExtensionContext) {
 
 			if (!!config['scanOnSave'] && config['scanOnSave'] !== "none") {
 				if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
-					kubescape.scanYaml()
+					scan.kubescapeScanYaml(document.uri.fsPath, "nsa")
 				}
 			}
 		},
