@@ -27,6 +27,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	addOnSaveTextDocumentListeners(context)
 
+	if (vscode.window.activeTextEditor) {
+		scan.kubescapeScanYaml(vscode.window.activeTextEditor.document.uri.fsPath, "nsa")
+	}
 }
 
 // this method is called when your extension is deactivated
