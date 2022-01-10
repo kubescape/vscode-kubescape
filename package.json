@@ -9,7 +9,7 @@
   "license": "Apache",
   "icon": "images/logo.png",
   "version": "0.0.1",
-  "publisher": "armosec",
+  "publisher": "kubescape",
   "engines": {
     "vscode": "^1.50.0"
   },
