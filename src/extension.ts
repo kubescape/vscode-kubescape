@@ -27,8 +27,13 @@ export async function activate(context: vscode.ExtensionContext) {
 		subscriptions.push(vscode.commands.registerCommand(fullFuncName, () => eval(`${fullFuncName}()`)));
 	}
 
-	addOnSaveTextDocumentListeners(context)
+	/* Auto scan on save */
+	addOnSaveTextDocument(context)
 
+	/* Scan on new file open */
+	addOnOpenTextDocument(context)
+
+	/* First scan of current file */
 	if (vscode.window.activeTextEditor) {
 		const doc = vscode.window.activeTextEditor.document
 		scan.kubescapeScanYaml(doc.uri.fsPath, getKubescapeFrameworks(doc))
@@ -40,23 +45,30 @@ export function deactivate() {
 	contextHelper.setExtensionContext(undefined)
 }
 
-function addOnSaveTextDocumentListeners(ctx: vscode.ExtensionContext) {
-	vscode.workspace.onDidSaveTextDocument(
-		(document) => {
-			if (document.languageId !== 'yaml') {
-				return;
-			}
-			const config = kubescapeConfig.getKubescapeConfig(document.uri)
+function addOnSaveTextDocument(context : vscode.ExtensionContext) {
+	vscode.workspace.onDidSaveTextDocument((document) => {
+		if (document.languageId !== 'yaml') {
+			return;
+		}
 
-			if (!!config[CONFIG_SCAN_ON_SAVE] && config[CONFIG_SCAN_ON_SAVE] !== "none") {
-				if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
-					scan.kubescapeScanYaml(document.uri.fsPath, getKubescapeFrameworks(document))
-				}
+		const config = kubescapeConfig.getKubescapeConfig(document.uri)
+
+		if (!!config[CONFIG_SCAN_ON_SAVE] && config[CONFIG_SCAN_ON_SAVE] !== "none") {
+			if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
+				scan.kubescapeScanYaml(document.uri.fsPath, getKubescapeFrameworks(document))
 			}
-		},
-		null,
-		ctx.subscriptions
-	);
+		}
+	}, null, context.subscriptions);
+}
+
+function addOnOpenTextDocument(context : vscode.ExtensionContext) {
+	vscode.workspace.onDidOpenTextDocument((document) => {
+		if (document.languageId !== 'yaml') {
+			return;
+		}
+
+		scan.kubescapeScanYaml(document.uri.fsPath, getKubescapeFrameworks(document))
+	}, null, context.subscriptions);
 }
 
 function getKubescapeFrameworks(document: vscode.TextDocument): string {
