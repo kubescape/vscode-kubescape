@@ -49,5 +49,5 @@ export async function scanYaml() {
         return;
     }
 
-    scan.kubescapeScanYaml(currentFile.document.uri.fsPath, "nsa")
+    scan.kubescapeScanYaml(currentFile.document.uri.fsPath, "nsa", true)
 }

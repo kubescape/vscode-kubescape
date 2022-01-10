@@ -8,10 +8,10 @@
   },
   "license": "Apache",
   "icon": "images/logo.png",
-  "version": "0.0.1",
-  "publisher": "armosec",
+  "version": "0.0.2",
+  "publisher": "kubescape",
   "engines": {
-    "vscode": "^1.60.0"
+    "vscode": "^1.50.0"
   },
   "repository": {
     "type": "git",
@@ -29,9 +29,7 @@
     "kubescape"
   ],
   "activationEvents": [
-    "onLanguage:yaml",
-    "onCommand:kubescape.doctor",
-    "onCommand:kubescape.scan_yaml"
+    "onLanguage:yaml"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -46,7 +44,7 @@
       }
     ],
     "configuration": {
-      "type" : "object",
+      "type": "object",
       "title": "Kubescape",
       "properties": {
         "kubescape.dirPath": {
@@ -54,15 +52,26 @@
           "default": "$HOME/.kubescape/",
           "description": "The path in which kubescape should be installed"
         },
-        "kubescape.scanOnSave" : {
+        "kubescape.scanOnSave": {
           "type": "string",
           "enum": [
             "all",
             "yaml",
             "none"
           ],
-          "default" : "all",
+          "default": "all",
           "description": "Run analysis of kubescape when a document is being saved",
+          "scope": "resource"
+        },
+        "kubescape.scanFrameworks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "nsa"
+          ],
+          "description": "Frameworks to use for scaning",
           "scope": "resource"
         }
       }
@@ -83,7 +92,7 @@
     "@types/glob": "^7.1.4",
     "@types/mocha": "^9.0.0",
     "@types/node": "14.x",
-    "@types/vscode": "^1.60.0",
+    "@types/vscode": "^1.50.0",
     "@typescript-eslint/eslint-plugin": "^4.31.1",
     "@typescript-eslint/parser": "^4.31.1",
     "@vscode/test-electron": "^1.6.2",
