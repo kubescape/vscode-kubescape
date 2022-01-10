@@ -37,7 +37,7 @@ function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : 
         code: report.code,
         message: `${report.framework} ${report.id}:\n${report.alert}\n\n${report.description}\n\n${report.remediation}\n`,
         range: range,
-        severity: status ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning,
+        severity: status ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
         source: 'Kubescape',
     })
 }
