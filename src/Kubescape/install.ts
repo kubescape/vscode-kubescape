@@ -80,7 +80,18 @@ async function getPlatformPackageUrl(platformPackage : string) {
 export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
     return new Promise((resolve, _) => {
         let result = new KubescapeBinaryInfo()
-        exec('kubescape -h', async (err, stdout, stderr) => {
+        const isWindows = process.platform === 'win32' ||
+            process.env.OSTYPE === 'cygwin' ||
+            process.env.OSTYPE === 'msys'
+
+        let searchProg : string
+        if (isWindows) {
+            searchProg = 'where'
+        } else {
+            searchProg = 'which'
+        }
+
+        exec(`${searchProg} kubescape`, async (err, stdout, stderr) => {
             if (err) {
                 logger.logDebug("Kubescape in not in system path");
 
@@ -98,6 +109,7 @@ export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
                 })
             } else {
                 result.isInPath = true
+                result.location = stdout.trimEnd()
                 resolve(result);
             }
         })
