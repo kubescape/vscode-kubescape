@@ -2,7 +2,7 @@ import * as vscode from 'vscode'
 import { exec } from 'child_process'
 
 import * as install from './install'
-import * as logger from '../utils/log'
+import { Logger } from '../utils/log'
 import { ResourceHighlightsHelperService } from './yamlParse'
 
 let collection : vscode.DiagnosticCollection
@@ -26,7 +26,7 @@ function parseJsonSafe(str : string) {
         obj = JSON.parse(str)
     } catch {
         obj = undefined
-        logger.logWarning(`Not valid JSON: ${str}`)
+        Logger.warning(`Not valid JSON: ${str}`)
     }
 
     return obj

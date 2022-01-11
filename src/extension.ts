@@ -7,6 +7,7 @@ import * as contextHelper from './utils/context'
 import * as kubescapeConfig from './Kubescape/config'
 
 import { CONFIG_SCAN_FRAMEWORKS, CONFIG_SCAN_ON_SAVE } from './Kubescape/globals'
+import { Logger } from './utils/log';
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
@@ -38,11 +39,14 @@ export async function activate(context: vscode.ExtensionContext) {
 		const doc = vscode.window.activeTextEditor.document
 		scan.kubescapeScanYaml(doc.uri.fsPath, getKubescapeFrameworks(doc))
 	}
+
+	Logger.info("Kubescape in active")
 }
 
 // this method is called when your extension is deactivated
 export function deactivate() {
 	contextHelper.setExtensionContext(undefined)
+	Logger.info("Kubescape deactivated")
 }
 
 function addOnSaveTextDocument(context : vscode.ExtensionContext) {
