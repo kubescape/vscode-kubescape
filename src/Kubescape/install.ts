@@ -6,7 +6,7 @@ import axios from 'axios'
 import { exec } from 'child_process'
 
 import { Logger } from '../utils/log' 
-import { PACKAGE_NAME, PACKAGE_BASE_URL } from './globals'
+import { PACKAGE_NAME, PACKAGE_BASE_URL, IS_WINDOWS } from './globals'
 
 export class KubescapeBinaryInfo {
     isInPath : boolean
@@ -80,12 +80,9 @@ async function getPlatformPackageUrl(platformPackage : string) {
 export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
     return new Promise((resolve, _) => {
         let result = new KubescapeBinaryInfo()
-        const isWindows = process.platform === 'win32' ||
-            process.env.OSTYPE === 'cygwin' ||
-            process.env.OSTYPE === 'msys'
 
         let searchProg : string
-        if (isWindows) {
+        if (IS_WINDOWS) {
             searchProg = 'where'
         } else {
             searchProg = 'which'
@@ -132,8 +129,8 @@ export async function ensureKubescapeTool() {
         let kubescapeDir = getKubescapePath()
 
         const binaryUrl = await getPlatformPackageUrl(platformPackage);
-        const kubescapeName = "kubescape" + (platform == "win32" ? ".exe" : "");
-        kubescapeBinaryInfo.location = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, true);
+        const kubescapeName = "kubescape" + (IS_WINDOWS ? ".exe" : "");
+        kubescapeBinaryInfo.location = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, !IS_WINDOWS);
     }
 
     return true
