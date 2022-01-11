@@ -2,6 +2,9 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.0.4]
+- Fix for windows machines
+
 ## [0.0.3]
 - Scan when new yaml files are being open.
 - Use warnings instead of errors.
