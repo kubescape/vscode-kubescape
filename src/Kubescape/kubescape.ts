@@ -2,8 +2,9 @@ import * as vscode from 'vscode'
 
 import * as install from './install'
 import * as scan from './scan'
-import * as logger from '../utils/log'
 import * as contextHelper from '../utils/context'
+
+import { Logger } from '../utils/log'
 
 export async function doctor() {
     let kubescapeBinaryInfo = await install.isKubescapeInstalled();
@@ -23,10 +24,10 @@ export async function doctor() {
              })
             return;
         } else {
-            logger.logWarning(`Kubescape is found at ${kubescapeBinaryInfo.location}, but not in system path`);
+            Logger.warning(`Kubescape is found at ${kubescapeBinaryInfo.location}, but not in system path`, true);
         }
     } else {
-        logger.logDebug('Kubescape is installed correctly');
+        Logger.debug('Kubescape is installed correctly', true);
     }
 }
 
@@ -34,18 +35,18 @@ export async function scanYaml() {
     const context = contextHelper.getExtensionContext()
     if (!context)
     {
-        logger.logDebug("Extension context is not properly loaded")
+        Logger.debug("Extension context is not properly loaded")
         return
     }
     
     const currentFile = vscode.window.activeTextEditor
     if (!currentFile) {
-        logger.logError("Could not locate open directories")
+        Logger.error("Could not locate open directories")
         return
     }
 
     if (currentFile.document.languageId !== "yaml") {
-        logger.logError("Not an YAML configuration file");
+        Logger.error("Not an YAML configuration file");
         return;
     }
 

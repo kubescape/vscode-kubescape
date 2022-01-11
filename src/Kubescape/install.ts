@@ -5,7 +5,7 @@ import * as os from 'os'
 import axios from 'axios'
 import { exec } from 'child_process'
 
-import * as logger from '../utils/log'
+import { Logger } from '../utils/log' 
 import { PACKAGE_NAME, PACKAGE_BASE_URL } from './globals'
 
 export class KubescapeBinaryInfo {
@@ -47,12 +47,12 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
                         () => { }
                     )
                 }
-                logger.logInfo(`Successfully downloaded ${fileName} into ${downloadPath}`, true)
+                Logger.info(`Successfully downloaded ${fileName} into ${downloadPath}`, true)
 
             }
         )
     } catch {
-        logger.logError(`Could not download ${url}`, true);
+        Logger.error(`Could not download ${url}`, true);
         localPath = ""
     }
 
@@ -80,9 +80,20 @@ async function getPlatformPackageUrl(platformPackage : string) {
 export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
     return new Promise((resolve, _) => {
         let result = new KubescapeBinaryInfo()
-        exec('kubescape -h', async (err, stdout, stderr) => {
+        const isWindows = process.platform === 'win32' ||
+            process.env.OSTYPE === 'cygwin' ||
+            process.env.OSTYPE === 'msys'
+
+        let searchProg : string
+        if (isWindows) {
+            searchProg = 'where'
+        } else {
+            searchProg = 'which'
+        }
+
+        exec(`${searchProg} kubescape`, async (err, stdout, stderr) => {
             if (err) {
-                logger.logDebug("Kubescape in not in system path");
+                Logger.debug("Kubescape in not in system path");
 
                 // Check if kubescape is in the default path
                 const localPath = getKubescapePath();
@@ -98,6 +109,7 @@ export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
                 })
             } else {
                 result.isInPath = true
+                result.location = stdout.trimEnd()
                 resolve(result);
             }
         })
@@ -113,7 +125,7 @@ export async function ensureKubescapeTool() {
         let platform = os.platform();
         let platformPackage = pp.platforms[platform];
         if (platformPackage == undefined) {
-            logger.logError(`Platform '${platform}' is not supported`, true);
+            Logger.error(`Platform '${platform}' is not supported`, true);
             return false;
         }
 

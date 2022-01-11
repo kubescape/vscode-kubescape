@@ -2,7 +2,7 @@ import * as vscode from 'vscode'
 import { exec } from 'child_process'
 
 import * as install from './install'
-import * as logger from '../utils/log'
+import { Logger } from '../utils/log'
 import { ResourceHighlightsHelperService } from './yamlParse'
 
 let collection : vscode.DiagnosticCollection
@@ -26,7 +26,7 @@ function parseJsonSafe(str : string) {
         obj = JSON.parse(str)
     } catch {
         obj = undefined
-        logger.logWarning(`Not valid JSON: ${str}`)
+        Logger.warning(`Not valid JSON: ${str}`)
     }
 
     return obj
@@ -37,7 +37,7 @@ function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : 
         code: report.code,
         message: `${report.framework} ${report.id}:\n${report.alert}\n\n${report.description}\n\n${report.remediation}\n`,
         range: range,
-        severity: status ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning,
+        severity: status ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
         source: 'Kubescape',
     })
 }
@@ -103,49 +103,46 @@ function processKubescapeResult(res : any) {
 }
 
 export async function kubescapeScanYaml(yamlPath : string, frameworks : string, displayOutput : boolean = false) {
-    let cmd = `${install.kubescapeBinaryInfo.location} scan framework ${frameworks} ${yamlPath} --format json`
+    let kubescapePath : string
+    
+    if (install.kubescapeBinaryInfo.location.length > 0) {
+        kubescapePath = install.kubescapeBinaryInfo.location
+    } else if (install.kubescapeBinaryInfo.isInPath) {
+        kubescapePath = 'kubescape'
+    } else {
+        return
+    }
 
-    if (displayOutput) {
-        vscode.window.withProgress({
-            location : vscode.ProgressLocation.Notification,
-            title : "Scanning",
-            cancellable : false
-        },() => {
-            return new Promise<void>(resolve=> {
-                exec(cmd,
-                    async (err, stdout, stderr) => {
-                        if (err) {
-                            console.log(stderr)
-                        } else {
-                            let res = parseJsonSafe(stdout)
-                            if (res) {
-                                processKubescapeResult(res)
-                            }
+    let cmd = `${kubescapePath} scan framework ${frameworks} ${yamlPath} --format json`
+
+    vscode.window.withProgress({
+        location: displayOutput ? vscode.ProgressLocation.Notification : vscode.ProgressLocation.Window,
+        title: "Scanning",
+        cancellable: false
+    }, () => {
+        return new Promise<void>(resolve => {
+            exec(cmd,
+                async (err, stdout, stderr) => {
+                    if (err) {
+                        console.log(stderr)
+                    } else {
+                        let res = parseJsonSafe(stdout)
+                        if (res) {
+                            processKubescapeResult(res)
                         }
+                    }
 
+                    if (displayOutput) {
                         const uri = vscode.Uri.parse('untitled:' + "Result");
                         const doc = await vscode.workspace.openTextDocument(uri); // calls back into the provider
                         let editor = await vscode.window.showTextDocument(doc, { preview: false });
                         editor.edit((e) => {
                             e.insert(new vscode.Position(0, 0), stdout)
                         })
-
-                        resolve()
-                    })
-            })
-        })
-    } else {
-        exec(cmd,
-            async (err, stdout, stderr) => {
-                if (err) {
-                    console.log(stderr)
-                } else {
-                    let res = parseJsonSafe(stdout)
-                    if (res) {
-                        processKubescapeResult(res)
                     }
-                }
 
-            })
-    }
+                    resolve()
+                })
+        })
+    })
 }
