@@ -2,6 +2,10 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.0.5]
+- Minor readme and workflow changes
+- Support path expansion
+
 ## [0.0.4]
 - Fix for windows machines
 
