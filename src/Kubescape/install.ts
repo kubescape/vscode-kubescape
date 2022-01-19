@@ -5,8 +5,10 @@ import * as os from 'os'
 import axios from 'axios'
 import { exec } from 'child_process'
 
+import * as kubescapeConfig  from './config'
 import { Logger } from '../utils/log' 
-import { PACKAGE_NAME, PACKAGE_BASE_URL, IS_WINDOWS } from './globals'
+import { expend } from '../utils/path' 
+import { PACKAGE_NAME, PACKAGE_BASE_URL, IS_WINDOWS, CONFIG_DIR_PATH } from './globals'
 
 export class KubescapeBinaryInfo {
     isInPath : boolean
@@ -60,7 +62,17 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
 }
 
 function getKubescapePath() {
-    const kubescape_dir = path.join(os.homedir(), ".kubescape")
+    let kubescape_dir = path.join(os.homedir(), ".kubescape")
+
+    /* override from configuration */
+    const textEditor = vscode.window.activeTextEditor
+    if (textEditor)
+    {
+        const config = kubescapeConfig.getKubescapeConfig(textEditor.document.uri)
+		if (config[CONFIG_DIR_PATH]) {
+            kubescape_dir = expend(config[CONFIG_DIR_PATH])
+		}
+    }
 
     fs.stat(kubescape_dir, (err) => {
         if (err) {
