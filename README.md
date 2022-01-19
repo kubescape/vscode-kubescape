@@ -12,10 +12,32 @@ You can access any of this extension commands by opening the Command Palette (Ct
 
 The default behavior also scans yaml files on save 💾.
 
+Scanning results are marked and can be found in `vscode` 'PROBLEMS' tab. There is also a hover info that can be viewed on marked positions.
+
+![yaml-demo](./images/yaml-demo.gif)
+
 ## 🔒 Requirements
 
 This extension downloads the latest Kubescape version.
 However, it is recommended to have Kubescape installed in your path.
+
+## ⚙️ Configuration
+
+Currently the following options can be configured:
+
++ `Dir Path` - The directory to install kubescape by default if not already exists in PATH.
++ `Scan Frameworks` - Which frameworks should be used for scanning. Allows providing custom frameworks as well.
++ `Scan On Save` - Which file formats should auto run analysis on save. 
+
+![kubescape-config](./images/kubescape-config.png)
+
+## 💼 Marketplace
+
+This extension is available officially at either:
+
+- [Microsoft VScode Extensions Marketplace](https://marketplace.visualstudio.com/items?itemName=kubescape.kubescape)
+- [Open VSX Registry](https://open-vsx.org/extension/kubescape/kubescape)
+- [Kubescape Github Releases](https://github.com/armosec/kubescape/releases)
 
 ## 🗒️ Release Notes
 
