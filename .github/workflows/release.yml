@@ -73,10 +73,3 @@ jobs:
           asset_path: ./kubescape-${{ env.EXT_VERSION }}.vsix
           asset_name: kubescape-${{ env.EXT_VERSION }}.vsix
           asset_content_type: application/zip
-
-      - name: publish
-        uses: lannonbr/vsce-action@0f3391ee0477b08fae949eb0a875e91e6d20b075
-        with:
-          args: "publish -p $VSCE_TOKEN"
-        env:
-          VSCE_TOKEN: ${{ secrets.MARKETPLACE_AT }}
