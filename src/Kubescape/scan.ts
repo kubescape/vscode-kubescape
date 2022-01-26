@@ -63,37 +63,32 @@ function processKubescapeResult(res : any) {
                 const has_warn = ctrlReport.warningResources > 0
                 if (has_failed || has_warn) {
                     let range: vscode.Range;
-                    if (ctrlReport.ruleReports) {
-                        for (let ruleReport of ctrlReport.ruleReports) {
-                            for (let ruleResponse of ruleReport.ruleResponses) {
-                                for (let fPath of ruleResponse.failedPaths) {
-                                    if (fPath === "") continue
-                                    const steps = ResourceHighlightsHelperService.splitPathToSteps(fPath)
-                                    let position = ResourceHighlightsHelperService.getStartIndexAcc(steps, lines)
+                    for (let ruleReport of (ctrlReport.ruleReports ? ctrlReport.ruleReports : [])) {
+                        for (let ruleResponse of (ruleReport.ruleResponses ? ruleReport.ruleResponses : [])) {
+                            for (let fPath of (ruleResponse.failedPaths ? ruleResponse.failedPaths : [])) {
+                                if (fPath === "") continue
+                                const steps = ResourceHighlightsHelperService.splitPathToSteps(fPath)
+                                let position = ResourceHighlightsHelperService.getStartIndexAcc(steps, lines)
 
-                                    if (position.startIndex > 0) {
-                                        let start = position.prevIndent
-                                        let end = start + steps[steps.length - 1].length
-                                        let row = position.startIndex
-                                        range = new vscode.Range(new vscode.Position(row, start), 
-                                                new vscode.Position(row, end))
+                                if (position.startIndex > 0) {
+                                    let start = position.prevIndent
+                                    let end = start + steps[steps.length - 1].length
+                                    let row = position.startIndex
+                                    range = new vscode.Range(new vscode.Position(row, start),
+                                        new vscode.Position(row, end))
 
-                                        let kubescapeReport : KubescapeReport = {
-                                            framework : framework.name,
-                                            id : ctrlReport.id,
-                                            alert: ruleResponse.alertMessage,
-                                            description: ctrlReport.description,
-                                            remediation: ctrlReport.remediation,
-                                            code: fPath
-                                        }
-                                        addDiagnostic(kubescapeReport, range, has_failed, problems)
+                                    let kubescapeReport: KubescapeReport = {
+                                        framework: framework.name,
+                                        id: ctrlReport.id,
+                                        alert: ruleResponse.alertMessage,
+                                        description: ctrlReport.description,
+                                        remediation: ctrlReport.remediation,
+                                        code: fPath
                                     }
+                                    addDiagnostic(kubescapeReport, range, has_failed, problems)
                                 }
                             }
                         }
-                    } else {
-                        range = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 1))
-                        addDiagnostic(ctrlReport, range, has_failed, problems)
                     }
                 }
             }
