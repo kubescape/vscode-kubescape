@@ -2,6 +2,10 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.0.6]
+- Support newer json from kubescape
+- Make sure to wait for kubescape to be downloaded.
+
 ## [0.0.5]
 - Minor readme and workflow changes
 - Support path expansion
