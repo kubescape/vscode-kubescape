@@ -32,10 +32,18 @@ function parseJsonSafe(str : string) {
     return obj
 }
 
+function getFormattedField(str : string, lable? : string) {
+    return str.length > 0 ? `\n${lable}: ${str}\n` : ""
+}
+
 function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : boolean, collection : vscode.Diagnostic[]) {
+    const heading =`${report.framework} ${report.id}` 
     collection.push({
         code: report.code,
-        message: `${report.framework} ${report.id}:\n${report.alert}\n\n${report.description}\n\n${report.remediation}\n`,
+        message: `${heading}\n${'_'.repeat(heading.length)}\n` +
+            `${getFormattedField(report.alert, "Alert")}` +
+            `${getFormattedField(report.description, "Description")}` +
+            `${getFormattedField(report.remediation, "Remediation")}`,
         range: range,
         severity: status ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
         source: 'Kubescape',
