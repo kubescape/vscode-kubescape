@@ -25,7 +25,7 @@ export var kubescapeBinaryInfo : KubescapeBinaryInfo;
 async function downloadFile(url : string, downloadPath : string, fileName : string, executable = false) : Promise<string> {
     let localPath = path.resolve(__dirname, downloadPath, fileName)
     try {
-        vscode.window.withProgress(
+        await vscode.window.withProgress(
             {
                 location: vscode.ProgressLocation.Notification,
                 cancellable: false,
@@ -56,9 +56,10 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
     } catch {
         Logger.error(`Could not download ${url}`, true);
         localPath = ""
+    } finally {
+        return localPath
     }
 
-    return localPath
 }
 
 function getKubescapePath() {
@@ -145,5 +146,5 @@ export async function ensureKubescapeTool() {
         kubescapeBinaryInfo.location = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, !IS_WINDOWS);
     }
 
-    return true
+    return kubescapeBinaryInfo.isInPath || kubescapeBinaryInfo.location.length > 0
 }
