@@ -110,7 +110,7 @@ export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
                 const platform = os.platform();
                 const kubescapeName = "kubescape" + (platform == "win32" ? ".exe" : "");
 
-                const searchedPath = localPath + "/" + kubescapeName
+                const searchedPath = expend(localPath + "/" + kubescapeName)
                 fs.stat(searchedPath, (err) => {
                     if (!err) {
                         result.location = searchedPath
