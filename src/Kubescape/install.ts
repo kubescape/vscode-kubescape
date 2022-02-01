@@ -2,10 +2,17 @@ import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
-import axios from 'axios'
+import * as stream from 'stream'
+
+import fetch from 'node-fetch'
+
 import { exec } from 'child_process'
+import { AbortController } from 'abort-controller';
+import { promisify } from 'util'
+
 
 import * as kubescapeConfig  from './config'
+
 import { Logger } from '../utils/log' 
 import { expend } from '../utils/path' 
 import { PACKAGE_NAME, PACKAGE_BASE_URL, IS_WINDOWS, CONFIG_DIR_PATH } from './globals'
@@ -25,34 +32,53 @@ export var kubescapeBinaryInfo : KubescapeBinaryInfo;
 async function downloadFile(url : string, downloadPath : string, fileName : string, executable = false) : Promise<string> {
     let localPath = path.resolve(__dirname, downloadPath, fileName)
     try {
-        await vscode.window.withProgress(
-            {
-                location: vscode.ProgressLocation.Notification,
-                cancellable: false,
-                title: 'Downloading Kubescape latest version'
-            },
-            async () => {
+        let cancel = new AbortController()
+        const opts =
+        {
+            location: vscode.ProgressLocation.Notification,
+            cancellable: cancel !== null,
+            title: 'Downloading Kubescape latest version'
+        }
 
-                let response = await axios({
-                    method: 'GET',
-                    url: url,
-                    responseType: 'stream'
-                })
-                
-                const writer = response.data.pipe(fs.createWriteStream(localPath));
-                await new Promise((fulfill) => writer.on("close", fulfill))
-
-                if (executable) {
-                    fs.chmod(
-                        localPath,
-                        fs.constants.S_IRWXU | fs.constants.S_IRWXG | fs.constants.S_IXOTH,
-                        () => { }
-                    )
-                }
-                Logger.info(`Successfully downloaded ${fileName} into ${downloadPath}`, true)
-
+        await vscode.window.withProgress(opts, async (progress, canc) => {
+            if (cancel) {
+                canc.onCancellationRequested((_) => cancel.abort());
             }
-        )
+
+            const response = await fetch(url, { signal: cancel.signal })
+            if (!response.ok || !response.body) {
+                Logger.error(`Failed to download ${url}`)
+                throw new Error
+            }
+
+            const size = Number(response.headers.get('content-length'))
+
+            let read = 0;
+
+            response.body.on('data', (chunk: Buffer) => {
+                read += chunk.length
+                progress.report({
+                    message: 'Downloading...',
+                    increment: read / size
+                })
+            })
+
+            const out = fs.createWriteStream(localPath)
+            await promisify(stream.pipeline)(response.body, out).catch(e => {
+                fs.unlink(localPath, (_) => null)
+                throw new Error
+            })
+
+
+            if (executable) {
+                fs.chmod(
+                    localPath,
+                    fs.constants.S_IRWXU | fs.constants.S_IRWXG | fs.constants.S_IXOTH,
+                    () => { }
+                )
+            }
+            Logger.info(`Successfully downloaded ${fileName} into ${downloadPath}`, true)
+        })
     } catch {
         Logger.error(`Could not download ${url}`, true);
         localPath = ""
@@ -85,8 +111,9 @@ function getKubescapePath() {
 }
 
 async function getPlatformPackageUrl(platformPackage : string) {
-    let res = await axios.get(PACKAGE_BASE_URL)
-    return res.data.html_url.replace("/tag/", "/download/") + "/" + platformPackage
+    let res = await fetch(PACKAGE_BASE_URL)
+    let obj = await res.json()
+    return obj.html_url.replace("/tag/", "/download/") + "/" + platformPackage
 }
 
 // It might be better to download to context.extensionPath

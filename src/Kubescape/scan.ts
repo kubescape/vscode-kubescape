@@ -113,6 +113,7 @@ export async function kubescapeScanYaml(yamlPath : string, frameworks : string, 
     } else if (install.kubescapeBinaryInfo.isInPath) {
         kubescapePath = 'kubescape'
     } else {
+        Logger.error("Kubescape is not installed!", true)
         return
     }
 

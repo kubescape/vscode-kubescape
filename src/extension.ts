@@ -14,18 +14,18 @@ import { Logger } from './utils/log';
 export async function activate(context: vscode.ExtensionContext) {
 	contextHelper.setExtensionContext(context)
 
-	let hasKubescape = await install.ensureKubescapeTool()
-
-	if (!hasKubescape) {
-		return
-	}
-
 	let subscriptions = context.subscriptions;
 
 	// Subscribe all the exported functions in kubescape.ts
 	for (let exportedFunc of Object.keys(kubescape)){
 		let fullFuncName = `kubescape.${exportedFunc}`
 		subscriptions.push(vscode.commands.registerCommand(fullFuncName, () => eval(`${fullFuncName}()`)));
+	}
+
+	let hasKubescape = await install.ensureKubescapeTool()
+
+	if (!hasKubescape) {
+		return
 	}
 
 	/* Auto scan on save */
