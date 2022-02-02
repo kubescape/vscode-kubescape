@@ -25,9 +25,10 @@ However, it is recommended to have Kubescape installed in your path.
 
 Currently the following options can be configured:
 
-+ `Dir Path` - The directory to install kubescape by default if not already exists in PATH.
++ `Dir Path` - A directory to override kubescape location. Uses the extension directory by default.
 + `Scan Frameworks` - Which frameworks should be used for scanning. Allows providing custom frameworks as well.
 + `Scan On Save` - Which file formats should auto run analysis on save. 
++ `Version Tier` - Choosing between kubescape stable version and latest version if you like bleeding adge.
 
 ![kubescape-config](./images/kubescape-config.png)
 

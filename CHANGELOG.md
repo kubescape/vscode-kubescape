@@ -2,6 +2,18 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.0.8]
+- Add kubescape version validation
+  Kubescape version are now being checked
+  The version tier could be 'stable' or 'latest' (configurable)
+  Doctor will report installed version as well
+
+- Using the extension path as default location for kubescape unless specified otherwise.
+
+- Add option to list supported frameworks
+
+- Show progress when downloading kubescape and enable cancel operation
+
 ## [0.0.7]
 - Address CVE-2021-23566 in nanoid
 
