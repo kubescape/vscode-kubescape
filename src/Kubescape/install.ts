@@ -167,17 +167,17 @@ export async function ensureKubescapeTool() {
     const config = kubescapeConfig.getKubescapeConfig()
     const needsLatest = config[CONFIG_VERSION_TIER] && config[CONFIG_VERSION_TIER] === "latest"
 
-    const kubescapeVersion = await getKubescapeVersion()
-
     if (!needsUpdate) {
+        const kubescapeVersion = await getKubescapeVersion()
+
         /* kubescape exists - check letest version */
         needsUpdate = kubescapeVersion.isLatest != needsLatest
-    }
 
-    if (!needsUpdate && !needsLatest) {
-        /* not latest version - verify stable version  */
-        needsUpdate = kubescapeVersion.version !== PACKAGE_STABLE_BUILD
-    } 
+        if (!needsUpdate && !needsLatest) {
+            /* not latest version - verify stable version  */
+            needsUpdate = kubescapeVersion.version !== PACKAGE_STABLE_BUILD
+        } 
+    }
 
     if (needsUpdate) {
 
