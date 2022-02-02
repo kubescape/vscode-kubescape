@@ -2,6 +2,9 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.0.9]
+- Bug fix
+
 ## [0.0.8]
 - Add kubescape version validation
   Kubescape version are now being checked
