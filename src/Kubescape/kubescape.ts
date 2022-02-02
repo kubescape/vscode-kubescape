@@ -35,13 +35,6 @@ export async function doctor() {
 }
 
 export async function scanYaml() {
-    const context = contextHelper.getExtensionContext()
-    if (!context)
-    {
-        Logger.debug("Extension context is not properly loaded")
-        return
-    }
-    
     const currentFile = vscode.window.activeTextEditor
     if (!currentFile) {
         Logger.error("Could not locate open directories")
