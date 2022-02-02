@@ -67,10 +67,12 @@ function processKubescapeResult(res : any, filePath : string) {
         const lines = doc.getText().split(new RegExp(/\n/))
 
         for (let framework of res) {
+            let frameWorkFailedPaths : boolean = false
             for (let ctrlReport of framework.controlReports) {
                 const has_failed = ctrlReport.failedResources > 0
                 const has_warn = ctrlReport.warningResources > 0
                 if (has_failed || has_warn) {
+                    frameWorkFailedPaths = true
                     let range: vscode.Range;
                     for (let ruleReport of (ctrlReport.ruleReports ? ctrlReport.ruleReports : [])) {
                         for (let ruleResponse of (ruleReport.ruleResponses ? ruleReport.ruleResponses : [])) {
@@ -99,9 +101,10 @@ function processKubescapeResult(res : any, filePath : string) {
                             }
                         }
                     }
-                } else {
-                    Logger.info(`Framework ${framework} has no failed paths to mark`)
                 }
+            }
+            if (!frameWorkFailedPaths) {
+                Logger.info(`Framework ${framework.name} has no failed paths to mark`)
             }
         }
         collections[filePath].set(currentFileUri, problems);
