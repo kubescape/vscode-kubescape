@@ -4,6 +4,7 @@ import { exec } from 'child_process'
 import * as install from './install'
 import { Logger } from '../utils/log'
 import { ResourceHighlightsHelperService } from './yamlParse'
+import { COMMAND_SCAN_FRAMEWORK, ERROR_KUBESCAPE_NOT_INSTALLED } from './globals'
 
 let collection : vscode.DiagnosticCollection
 
@@ -113,11 +114,11 @@ export async function kubescapeScanYaml(yamlPath : string, frameworks : string, 
     } else if (install.kubescapeBinaryInfo.isInPath) {
         kubescapePath = 'kubescape'
     } else {
-        Logger.error("Kubescape is not installed!", true)
+        Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED, true)
         return
     }
 
-    let cmd = `${kubescapePath} scan framework ${frameworks} ${yamlPath} --format json`
+    let cmd = `${kubescapePath} ${COMMAND_SCAN_FRAMEWORK} ${frameworks} ${yamlPath} --format json`
 
     vscode.window.withProgress({
         location: displayOutput ? vscode.ProgressLocation.Notification : vscode.ProgressLocation.Window,
@@ -128,7 +129,7 @@ export async function kubescapeScanYaml(yamlPath : string, frameworks : string, 
             exec(cmd,
                 async (err, stdout, stderr) => {
                     if (err) {
-                        console.log(stderr)
+                        Logger.error(stderr)
                     } else {
                         let res = parseJsonSafe(stdout)
                         if (res) {

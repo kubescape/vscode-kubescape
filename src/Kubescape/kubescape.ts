@@ -1,8 +1,11 @@
 import * as vscode from 'vscode'
 
+import { AbortController } from 'abort-controller';
+
+
 import * as install from './install'
 import * as scan from './scan'
-import * as contextHelper from '../utils/context'
+import * as info from './info'
 
 import { Logger } from '../utils/log'
 
@@ -51,4 +54,32 @@ export async function scanYaml() {
     }
 
     scan.kubescapeScanYaml(currentFile.document.uri.fsPath, "nsa", true)
+}
+
+export async function listAvailableFrameworks() {
+
+    let cancel = new AbortController()
+    vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Listing supported frameworks",
+        cancellable: cancel !== null
+    }, async (_, canc) => {
+        if (cancel) {
+            canc.onCancellationRequested(()=>{
+                cancel.abort()
+            })
+        }
+        let frameworks = await info.getAvailableFrameworks()
+
+        if (frameworks.length) {
+
+            vscode.window.showQuickPick(frameworks).then(picked => {
+                if (picked) {
+                    vscode.env.clipboard.writeText(picked)
+                    Logger.info(`${picked} has been copied to clipboard`, true)
+                }
+            })
+        }
+
+    })
 }

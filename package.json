@@ -36,11 +36,15 @@
     "commands": [
       {
         "command": "kubescape.doctor",
-        "title": "Kubescape Doctor"
+        "title": "Kubescape: Doctor"
       },
       {
         "command": "kubescape.scanYaml",
-        "title": "Kubescape Scan YAML"
+        "title": "Kubescape: Scan YAML"
+      },
+      {
+        "command": "kubescape.listAvailableFrameworks",
+        "title": "Kubescape: List supported frameworks"
       }
     ],
     "configuration": {
