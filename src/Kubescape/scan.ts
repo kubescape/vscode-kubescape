@@ -99,6 +99,8 @@ function processKubescapeResult(res : any, filePath : string) {
                             }
                         }
                     }
+                } else {
+                    Logger.info(`Framework ${framework} has no failed paths to mark`)
                 }
             }
         }
