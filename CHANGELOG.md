@@ -2,6 +2,10 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+
+## [0.0.10]
+- Redownload logic fixes
+
 ## [0.0.9]
 - Bug fix
 
