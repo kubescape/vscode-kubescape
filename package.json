@@ -55,7 +55,7 @@
       "properties": {
         "kubescape.dirPath": {
           "type": "string",
-          "default": "$HOME/.kubescape/",
+          "default": null,
           "description": "The path in which kubescape should be installed"
         },
         "kubescape.scanOnSave": {

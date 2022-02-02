@@ -10,11 +10,11 @@ import { ERROR_KUBESCAPE_NOT_INSTALLED, COMMAND_LIST_FRAMEWORKS } from './global
 
 export async function getAvailableFrameworks() : Promise<string[]> {
     let kubescapeInfo = await install.isKubescapeInstalled()
-    if (kubescapeInfo.location.length <= 0) {
+    if (!kubescapeInfo.isInstalled) {
         Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED, true)
     }
 
-    const cmd = `${kubescapeInfo.location} ${COMMAND_LIST_FRAMEWORKS}`
+    const cmd = `${kubescapeInfo.path} ${COMMAND_LIST_FRAMEWORKS}`
     return new Promise<string[]>(resolve => {
         return exec(cmd, async (err, stdout, stderr) => {
 

@@ -111,19 +111,15 @@ function processKubescapeResult(res : any, filePath : string) {
     }
 }
 
-export async function kubescapeScanYaml(yamlPath : string, frameworks : string, displayOutput : boolean = false) {
-    let kubescapePath : string
-    
-    if (install.kubescapeBinaryInfo.location.length > 0) {
-        kubescapePath = install.kubescapeBinaryInfo.location
-    } else if (install.kubescapeBinaryInfo.isInPath) {
-        kubescapePath = 'kubescape'
-    } else {
+export async function kubescapeScanYaml(yamlPath : string, frameworks : string, displayOutput : boolean = false) : Promise<void> {
+    const kubescapeBinaryInfo : install.KubescapeBinaryInfo = await install.isKubescapeInstalled()
+
+    if (!kubescapeBinaryInfo.isInstalled) {
         Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED, true)
-        return
+        throw new Error
     }
 
-    let cmd = `${kubescapePath} ${COMMAND_SCAN_FRAMEWORK} ${frameworks} ${yamlPath} --format json`
+    const cmd = `${kubescapeBinaryInfo.path} ${COMMAND_SCAN_FRAMEWORK} ${frameworks} ${yamlPath} --format json`
 
     vscode.window.withProgress({
         location: displayOutput ? vscode.ProgressLocation.Notification : vscode.ProgressLocation.Window,

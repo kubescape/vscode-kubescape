@@ -11,24 +11,20 @@ import { Logger } from '../utils/log'
 
 export async function doctor() {
     let kubescapeBinaryInfo = await install.isKubescapeInstalled();
-    if (!kubescapeBinaryInfo.isInPath) {
-        if (kubescapeBinaryInfo.location == "") {
-            let options : string[] = ["Yes", "No"]
-            vscode.window.showInformationMessage("Kubescape is not installed, install now?", ...options).then(selected => {
-                switch (selected) {
-                    case options[0]:
-                        /* Install kubescape */
-                        install.ensureKubescapeTool() 
-                        break;
-                    case options[1]:
-                        break;
-                    default: break;
-                }
-             })
-            return;
-        } else {
-            Logger.warning(`Kubescape is found at ${kubescapeBinaryInfo.location}, but not in system path`, true);
-        }
+    if (!kubescapeBinaryInfo.isInstalled) {
+        let options : string[] = ["Yes", "No"]
+        vscode.window.showInformationMessage("Kubescape is not installed, install now?", ...options).then(selected => {
+            switch (selected) {
+                case options[0]:
+                    /* Install kubescape */
+                    install.ensureKubescapeTool() 
+                    break;
+                case options[1]:
+                    break;
+                default: break;
+            }
+         })
+        return;
     } else {
         Logger.debug('Kubescape is installed correctly', true);
     }

@@ -6,7 +6,7 @@ import * as scan from './Kubescape/scan'
 import * as contextHelper from './utils/context'
 import * as kubescapeConfig from './Kubescape/config'
 
-import { CONFIG_SCAN_FRAMEWORKS, CONFIG_SCAN_ON_SAVE } from './Kubescape/globals'
+import { CONFIG_SCAN_FRAMEWORKS, CONFIG_SCAN_ON_SAVE, ERROR_KUBESCAPE_NOT_INSTALLED } from './Kubescape/globals'
 import { Logger } from './utils/log';
 
 // this method is called when your extension is activated
@@ -25,7 +25,8 @@ export async function activate(context: vscode.ExtensionContext) {
 	let hasKubescape = await install.ensureKubescapeTool()
 
 	if (!hasKubescape) {
-		return
+		Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED)
+		throw new Error
 	}
 
 	/* Auto scan on save */
