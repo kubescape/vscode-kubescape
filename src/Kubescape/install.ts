@@ -15,8 +15,17 @@ import * as kubescapeConfig  from './config'
 
 import { Logger } from '../utils/log' 
 import { expend } from '../utils/path' 
-import { PACKAGE_NAME, PACKAGE_BASE_URL, IS_WINDOWS, CONFIG_DIR_PATH } from './globals'
 import { getExtensionContext } from '../utils/context'
+import { 
+    PACKAGE_NAME, 
+    PACKAGE_BASE_URL, 
+    IS_WINDOWS, 
+    CONFIG_DIR_PATH, 
+    CONFIG_VERSION_TIER, 
+    PACKAGE_DOWNLOAD_BASE_URL, 
+    PACKAGE_STABLE_BUILD 
+} from './globals'
+import { getKubescapeVersion, KubescapeVersion } from './info'
 
 export class KubescapeBinaryInfo {
     isInstalled : boolean
@@ -36,7 +45,7 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
         {
             location: vscode.ProgressLocation.Notification,
             cancellable: cancel !== null,
-            title: 'Downloading Kubescape latest version'
+            title: 'Downloading Kubescape tool'
         }
 
         await vscode.window.withProgress(opts, async (progress, canc) => {
@@ -125,10 +134,10 @@ async function getKubescapePath() : Promise<string> {
     })
 }
 
-async function getLetestVersionUrl(platformPackage : string) {
+async function getLetestVersionUrl() {
     let res = await fetch(PACKAGE_BASE_URL)
     let obj = await res.json()
-    return obj.html_url.replace("/tag/", "/download/") + "/" + platformPackage
+    return obj.html_url.replace("/tag/", "/download/")
 }
 
 export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
@@ -150,9 +159,32 @@ export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
 }
 
 export async function ensureKubescapeTool() {
-    let kubescapeBinaryInfo = await isKubescapeInstalled();
+    let kubescapeBinaryInfo = await isKubescapeInstalled()
 
-    if (!kubescapeBinaryInfo.isInstalled) {
+    let needsUpdate = !kubescapeBinaryInfo.isInstalled
+
+    /* Choose between version tiers */
+    const config = kubescapeConfig.getKubescapeConfig()
+    const needsLatest = config[CONFIG_VERSION_TIER] && config[CONFIG_VERSION_TIER] === "latest"
+
+    const kubescapeVersion = await getKubescapeVersion()
+
+    if (!needsUpdate) {
+        /* kubescape exists - check letest version */
+        needsUpdate = kubescapeVersion.isLatest != needsLatest
+    }
+
+    if (!needsUpdate && !needsLatest) {
+        /* not latest version - verify stable version  */
+        needsUpdate = kubescapeVersion.version !== PACKAGE_STABLE_BUILD
+    } 
+
+    if (needsUpdate) {
+
+        /* set download url */
+        let binaryUrl: string
+
+        /* platform information */
         let pkg = vscode.extensions.getExtension(PACKAGE_NAME)?.packageJSON;
         let pp = pkg.config.platformPackages;
         let platform = os.platform();
@@ -162,9 +194,17 @@ export async function ensureKubescapeTool() {
             return false;
         }
 
+        if (needsLatest) {
+            binaryUrl = await getLetestVersionUrl();
+        } else {
+            binaryUrl = `${PACKAGE_DOWNLOAD_BASE_URL}/${PACKAGE_STABLE_BUILD}`
+        }
+
+        binaryUrl += `/${platformPackage}`
+
+
         let kubescapeDir = await getKubescapePath()
 
-        const binaryUrl = await getLetestVersionUrl(platformPackage);
         const kubescapeName = "kubescape" + (IS_WINDOWS ? ".exe" : "");
         const kubescapeFullPath = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, !IS_WINDOWS);
         if (kubescapeFullPath.length > 0) {

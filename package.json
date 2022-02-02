@@ -79,6 +79,13 @@
           ],
           "description": "Frameworks to use for scaning",
           "scope": "resource"
+        },
+        "kubescape.versionTier": {
+          "type": "string",
+          "enum": ["stable", "latest"],
+          "default": "stable",
+          "description": "Kubescape version tier",
+          "scope": "resource"
         }
       }
     }

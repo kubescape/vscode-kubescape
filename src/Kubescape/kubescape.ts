@@ -26,7 +26,8 @@ export async function doctor() {
          })
         return;
     } else {
-        Logger.debug('Kubescape is installed correctly', true);
+        let kubescapeVersion = await info.getKubescapeVersion()
+        Logger.debug(`Kubescape is installed correctly ${kubescapeVersion.version} (${kubescapeVersion.isLatest ? 'latest' : 'stable'})`, true);
     }
 }
 
