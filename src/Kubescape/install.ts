@@ -171,7 +171,7 @@ export async function ensureKubescapeTool() {
         const kubescapeVersion = await getKubescapeVersion()
 
         /* kubescape exists - check letest version */
-        needsUpdate = kubescapeVersion.isLatest != needsLatest
+        needsUpdate = needsLatest && !kubescapeVersion.isLatest
 
         if (!needsUpdate && !needsLatest) {
             /* not latest version - verify stable version  */
