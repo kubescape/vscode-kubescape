@@ -6,7 +6,7 @@ import { Logger } from '../utils/log'
 import { ResourceHighlightsHelperService } from './yamlParse'
 import { COMMAND_SCAN_FRAMEWORK, ERROR_KUBESCAPE_NOT_INSTALLED } from './globals'
 
-let collection : vscode.DiagnosticCollection
+let collections : any = {}
 
 type KubescapeReport = { 
     framework : string
@@ -51,12 +51,12 @@ function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : 
     })
 }
 
-function processKubescapeResult(res : any) {
+function processKubescapeResult(res : any, filePath : string) {
     let problems : vscode.Diagnostic[] = []
-    if (!collection) {
-        collection = vscode.languages.createDiagnosticCollection('kubescape');
+    if (!collections[filePath]) {
+        collections[filePath] = vscode.languages.createDiagnosticCollection();
     } else {
-        collection.clear()
+        collections[filePath].clear()
     }
     
     if (vscode.window.activeTextEditor) {
@@ -102,7 +102,7 @@ function processKubescapeResult(res : any) {
                 }
             }
         }
-        collection.set(currentFileUri, problems);
+        collections[filePath].set(currentFileUri, problems);
     }
 }
 
@@ -133,7 +133,7 @@ export async function kubescapeScanYaml(yamlPath : string, frameworks : string, 
                     } else {
                         let res = parseJsonSafe(stdout)
                         if (res) {
-                            processKubescapeResult(res)
+                            processKubescapeResult(res, yamlPath)
                         }
                     }
 
