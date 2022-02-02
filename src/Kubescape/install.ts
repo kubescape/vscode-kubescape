@@ -54,13 +54,18 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
             const size = Number(response.headers.get('content-length'))
 
             let read = 0;
+            let lastFraction = 0;
 
             response.body.on('data', (chunk: Buffer) => {
                 read += chunk.length
-                progress.report({
-                    message: 'Downloading...',
-                    increment: read / size
-                })
+                const fraction = read / size
+                if (fraction > lastFraction) {
+                    progress.report({
+                        message: 'Downloading...',
+                        increment: 100 * (fraction - lastFraction)
+                    })
+                    lastFraction = fraction
+                }
             })
 
             const out = fs.createWriteStream(localPath)
@@ -110,7 +115,7 @@ function getKubescapePath() {
     return kubescape_dir
 }
 
-async function getPlatformPackageUrl(platformPackage : string) {
+async function getLetestVersionUrl(platformPackage : string) {
     let res = await fetch(PACKAGE_BASE_URL)
     let obj = await res.json()
     return obj.html_url.replace("/tag/", "/download/") + "/" + platformPackage
@@ -168,7 +173,7 @@ export async function ensureKubescapeTool() {
 
         let kubescapeDir = getKubescapePath()
 
-        const binaryUrl = await getPlatformPackageUrl(platformPackage);
+        const binaryUrl = await getLetestVersionUrl(platformPackage);
         const kubescapeName = "kubescape" + (IS_WINDOWS ? ".exe" : "");
         kubescapeBinaryInfo.location = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, !IS_WINDOWS);
     }
