@@ -338,6 +338,11 @@ export class KubescapeBinaryInfo {
             /* ---------------------------------------------------------------*/
             if (needsUpdate) {
                 this._isInstalled = await install.updateKubescape(needsLatest)
+                if (!this.isInstalled) {
+                    Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED)
+                    cancel.abort()
+                    return
+                }
 
                 /* Get version again after update */
                 this._versionInfo = await this.getKubescapeVersion()
