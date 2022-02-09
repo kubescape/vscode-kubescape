@@ -40,6 +40,11 @@ export async function activate(context: vscode.ExtensionContext) {
 	/* Scan on new file open */
 	addOnOpenTextDocument(context)
 
+	/* Remove diagnostics on file close */
+	vscode.workspace.onDidCloseTextDocument(doc => {
+		scan.removeFileDiagnostics(doc.fileName)
+	})
+
 	/* First scan of current file */
 	if (vscode.window.activeTextEditor) {
 		const doc = vscode.window.activeTextEditor.document

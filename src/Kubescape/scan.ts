@@ -43,7 +43,7 @@ function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : 
 function processKubescapeResult(res : any, filePath : string) {
     let problems : any = {}
     if (!collections[filePath]) {
-        collections[filePath] = vscode.languages.createDiagnosticCollection();
+        collections[filePath] = vscode.languages.createDiagnosticCollection()
     } else {
         collections[filePath].clear()
     }
@@ -98,6 +98,13 @@ function processKubescapeResult(res : any, filePath : string) {
             }
         }
         collections[filePath].set(currentFileUri, Object.keys(problems).map(problemId => problems[problemId]));
+    }
+}
+
+export function removeFileDiagnostics(filePath : string) {
+    if (collections && collections[filePath]) {
+        collections[filePath].clear()
+        delete collections[filePath]
     }
 }
 
