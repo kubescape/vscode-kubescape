@@ -101,7 +101,10 @@ function processKubescapeResult(res : any, filePath : string) {
     }
 }
 
-export async function kubescapeScanYaml(yamlPath : string, displayOutput : boolean = false) : Promise<void> {
+export async function kubescapeScanYaml(document : vscode.TextDocument, displayOutput : boolean = false) : Promise<void> {
+    if (!document || document.isUntitled) return
+
+    const yamlPath = document.uri.fsPath
     const kubescapeBinaryInfo : KubescapeBinaryInfo = KubescapeBinaryInfo.instance
 
     if (!kubescapeBinaryInfo.isInstalled) {
@@ -109,7 +112,7 @@ export async function kubescapeScanYaml(yamlPath : string, displayOutput : boole
         throw new Error
     }
 
-    const useArtifactsFrom = `--use-artifacts-from ${kubescapeBinaryInfo.directory}`
+    const useArtifactsFrom = `--use-artifacts-from "${kubescapeBinaryInfo.frameworkDirectory}"`
     const scanFrameworks = kubescapeBinaryInfo.frameworksNames.join(",")
 
     const cmd = `${kubescapeBinaryInfo.path} ${COMMAND_SCAN_FRAMEWORK} ${useArtifactsFrom} ${scanFrameworks} ${yamlPath} --format json`

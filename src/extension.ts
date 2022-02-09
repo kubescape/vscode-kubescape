@@ -43,7 +43,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	/* First scan of current file */
 	if (vscode.window.activeTextEditor) {
 		const doc = vscode.window.activeTextEditor.document
-		scan.kubescapeScanYaml(doc.uri.fsPath)
+		scan.kubescapeScanYaml(doc)
 	}
 
 	Logger.info("Kubescape in active")
@@ -65,7 +65,7 @@ function addOnSaveTextDocument(context : vscode.ExtensionContext) {
 
 		if (!!config[CONFIG_SCAN_ON_SAVE] && config[CONFIG_SCAN_ON_SAVE] !== "none") {
 			if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
-				scan.kubescapeScanYaml(document.uri.fsPath)
+				scan.kubescapeScanYaml(document)
 			}
 		}
 	}, null, context.subscriptions);
@@ -77,7 +77,7 @@ function addOnOpenTextDocument(context : vscode.ExtensionContext) {
 			return;
 		}
 
-		scan.kubescapeScanYaml(document.uri.fsPath)
+		scan.kubescapeScanYaml(document)
 	}, null, context.subscriptions);
 }
 

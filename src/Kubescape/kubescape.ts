@@ -45,7 +45,7 @@ export async function scanYaml() {
         return;
     }
 
-    scan.kubescapeScanYaml(currentFile.document.uri.fsPath, true)
+    scan.kubescapeScanYaml(currentFile.document, true)
 }
 
 export async function installFromAvailableFrameworks() {
