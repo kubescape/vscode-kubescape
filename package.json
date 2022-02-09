@@ -8,7 +8,7 @@
   },
   "license": "Apache",
   "icon": "images/logo.png",
-  "version": "0.0.10",
+  "version": "0.1.0",
   "publisher": "kubescape",
   "engines": {
     "vscode": "^1.50.0"

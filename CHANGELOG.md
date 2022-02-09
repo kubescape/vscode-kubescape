@@ -2,6 +2,17 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.1.0]
+Major changes!
+
+- Remove file diagnostics on close
+- Initialize extension once, cache results
+- No problem duplication
+- Allow kubescape binary override
+- Override framework dir and allow custom frameworks
+- Download framework, offline scanning
+- Introduce version tiers
+- fix: Don't run scanning when there is no real file in the system.
 
 ## [0.0.10]
 - Redownload logic fixes
