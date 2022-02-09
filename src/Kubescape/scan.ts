@@ -52,7 +52,7 @@ function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : 
 }
 
 function processKubescapeResult(res : any, filePath : string) {
-    let problems : vscode.Diagnostic[] = []
+    let problems : any = {}
     if (!collections[filePath]) {
         collections[filePath] = vscode.languages.createDiagnosticCollection();
     } else {
@@ -69,6 +69,7 @@ function processKubescapeResult(res : any, filePath : string) {
         for (let framework of res) {
             let frameWorkFailedPaths : boolean = false
             for (let ctrlReport of framework.controlReports) {
+                if (collections && collections[ctrlReport.id]) continue
                 const has_failed = ctrlReport.failedResources > 0
                 const has_warn = ctrlReport.warningResources > 0
                 if (has_failed || has_warn) {
