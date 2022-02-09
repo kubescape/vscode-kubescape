@@ -30,8 +30,7 @@
   ],
   "activationEvents": [
     "onLanguage:yaml",
-    "onCommand:kubescape.doctor",
-    "onCommand:kubescape.listAvailableFrameworks"
+    "onCommand:kubescape.doctor"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -45,8 +44,8 @@
         "title": "Kubescape: Scan YAML"
       },
       {
-        "command": "kubescape.listAvailableFrameworks",
-        "title": "Kubescape: List supported frameworks"
+        "command": "kubescape.installFromAvailableFrameworks",
+        "title": "Kubescape: Get more frameworks"
       }
     ],
     "configuration": {
@@ -56,7 +55,7 @@
         "kubescape.dirPath": {
           "type": "string",
           "default": null,
-          "description": "The path in which kubescape should be installed"
+          "description": "Custom path to a kubescape binary to use instead"
         },
         "kubescape.scanOnSave": {
           "type": "string",
@@ -66,26 +65,37 @@
             "none"
           ],
           "default": "all",
-          "description": "Run analysis of kubescape when a document is being saved",
-          "scope": "resource"
+          "description": "Run analysis of kubescape when a document is being saved"
+        },
+        "kubescape.requiredFrameworks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": null,
+          "description": "Required frameworks (will be downloaded if necessary)"
+        },
+        "kubescape.customFrameworksDir": {
+          "type": "string",
+          "default": null,
+          "description": "Directories with custom frameworks to use"
         },
         "kubescape.scanFrameworks": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "default": [
-            "nsa"
-          ],
-          "description": "Frameworks to use for scaning",
-          "scope": "resource"
+          "default": "all",
+          "description": "Which frameworks to use for scanning"
         },
         "kubescape.versionTier": {
           "type": "string",
-          "enum": ["stable", "latest"],
+          "enum": [
+            "stable",
+            "latest"
+          ],
           "default": "stable",
-          "description": "Kubescape version tier",
-          "scope": "resource"
+          "description": "Kubescape version tier"
         }
       }
     }
@@ -96,7 +106,8 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js"
+    "test": "node ./out/test/runTest.js",
+    "package": "vsce package"
   },
   "extensionDependencies": [
     "vscode.yaml"
@@ -113,7 +124,8 @@
     "eslint": "^7.32.0",
     "glob": "^7.1.7",
     "mocha": "^9.1.1",
-    "typescript": "^4.4.3"
+    "typescript": "^4.4.3",
+    "vsce": "^2.6.7"
   },
   "config": {
     "platformPackages": {

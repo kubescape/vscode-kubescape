@@ -12,6 +12,7 @@ import { promisify } from 'util'
 
 
 import * as kubescapeConfig  from './config'
+import * as ui from '../utils/ui'
 
 import { Logger } from '../utils/log' 
 import { expend } from '../utils/path' 
@@ -21,38 +22,21 @@ import {
     PACKAGE_BASE_URL, 
     IS_WINDOWS, 
     CONFIG_DIR_PATH, 
-    CONFIG_VERSION_TIER, 
     PACKAGE_DOWNLOAD_BASE_URL, 
-    PACKAGE_STABLE_BUILD 
+    PACKAGE_STABLE_BUILD,
+    COMMAND_GET_HELP,
 } from './globals'
-import { getKubescapeVersion, KubescapeVersion } from './info'
 
-export class KubescapeBinaryInfo {
-    isInstalled : boolean
-    path : string
-
-    constructor() {
-        this.isInstalled = false
-        this.path = ""
-    }
+type KubescapePath = {
+    fullPath : string,
+    baseDir : string
 }
 
 async function downloadFile(url : string, downloadPath : string, fileName : string, executable = false) : Promise<string> {
     let localPath = path.resolve(__dirname, downloadPath, fileName)
     try {
-        let cancel = new AbortController()
-        const opts =
-        {
-            location: vscode.ProgressLocation.Notification,
-            cancellable: cancel !== null,
-            title: 'Downloading Kubescape tool'
-        }
-
-        await vscode.window.withProgress(opts, async (progress, canc) => {
-            if (cancel) {
-                canc.onCancellationRequested((_) => cancel.abort());
-            }
-
+        const cancel = new AbortController()
+        await ui.progress("Downloading Kubescape", cancel, false, async(progress) => {
             const response = await fetch(url, { signal: cancel.signal })
             if (!response.ok || !response.body) {
                 Logger.error(`Failed to download ${url}`)
@@ -60,20 +44,11 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
             }
 
             const size = Number(response.headers.get('content-length'))
-
             let read = 0;
-            let lastFraction = 0;
 
             response.body.on('data', (chunk: Buffer) => {
                 read += chunk.length
-                const fraction = read / size
-                if (fraction > lastFraction) {
-                    progress.report({
-                        message: 'Downloading...',
-                        increment: 100 * (fraction - lastFraction)
-                    })
-                    lastFraction = fraction
-                }
+                progress(read, size)
             })
 
             const out = fs.createWriteStream(localPath)
@@ -82,11 +57,10 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
                 throw new Error
             })
 
-
             if (executable) {
                 await fs.promises.chmod(localPath, fs.constants.S_IRWXU | fs.constants.S_IRWXG | fs.constants.S_IXOTH)
             }
-            Logger.info(`Successfully downloaded ${fileName} into ${downloadPath}`, true)
+            Logger.info(`Successfully downloaded ${fileName} into ${downloadPath}`, false)
         })
     } catch {
         Logger.error(`Could not download ${url}`, true);
@@ -97,41 +71,78 @@ async function downloadFile(url : string, downloadPath : string, fileName : stri
 
 }
 
-async function getKubescapePath() : Promise<string> {
+
+function getOsKubescapeName(directory : string) {
+    const platform = os.platform();
+    const kubescapeName = "kubescape" + (platform == "win32" ? ".exe" : "");
+    return expend(directory + "/" + kubescapeName)
+}
+
+export async function isKubescapeInstalled(kubescapePath : string): Promise<boolean> {
+    return new Promise<boolean>(resolve => {
+        fs.stat(kubescapePath, err => {
+            if (err) {
+                resolve(false)
+                return
+            } 
+
+            exec(`${kubescapePath} ${COMMAND_GET_HELP}`, err => {
+                /* broken binary */
+                if (err) {
+                    resolve(false)
+                    return
+                }
+
+                resolve(true)
+            })
+        })
+    })
+}
+
+export async function getKubescapeDir() : Promise<string> {
     /* Enable override from configuration */
-    let kubescape_dir : string = await new Promise<string>(resolve => {
-        const textEditor = vscode.window.activeTextEditor
-        if (textEditor)
-        {
-            const config = kubescapeConfig.getKubescapeConfig(textEditor.document.uri)
-            if (config[CONFIG_DIR_PATH]) {
-                let dir = expend(config[CONFIG_DIR_PATH])
-    
-                fs.stat(dir, err => {
-                    if (!err) { 
-                        resolve(dir)
-                    } 
-                    Logger.error(`The path ${dir} does not exists and therefore ignored`)
-                    resolve("")
-                })
+    let kubescape_dir = await new Promise<string | undefined>(resolve => {
+        const config = kubescapeConfig.getKubescapeConfig()
+        if (!config[CONFIG_DIR_PATH]) {
+           resolve(undefined) 
+           return
+        } 
+
+        let dir = expend(config[CONFIG_DIR_PATH])
+
+        fs.stat(dir, err => {
+            if (!err) {
+                resolve(dir)
+                return
             }
-        }
-        resolve("")
+            Logger.error(`The path ${dir} does not exists and therefore ignored`)
+            resolve(undefined)
+        })
     })
 
-    return new Promise<string>(resolve => {
-        if (kubescape_dir.length <= 0) {
+    if (!kubescape_dir || kubescape_dir.length <= 0) {
+        kubescape_dir = await new Promise<string>(resolve => {
             const extensioContext = getExtensionContext()
             if (!extensioContext) {
                 Logger.error("The extension is not loaded properly!", true)
                 throw new Error
             } else {
                 kubescape_dir = path.join(extensioContext.extensionPath, "install")
-                fs.promises.mkdir(kubescape_dir, {recursive : true})
+                fs.promises.mkdir(kubescape_dir, { recursive: true })
                 resolve(kubescape_dir)
             }
-        }
-    })
+        })
+    }
+
+    return kubescape_dir
+}
+
+export async function getKubescapePath() : Promise<KubescapePath> {
+    let kubescape_dir = await getKubescapeDir()
+    return {
+        baseDir : kubescape_dir,
+        fullPath : getOsKubescapeName(kubescape_dir)
+    }
 }
 
 async function getLetestVersionUrl() {
@@ -140,77 +151,36 @@ async function getLetestVersionUrl() {
     return obj.html_url.replace("/tag/", "/download/")
 }
 
-export async function isKubescapeInstalled() : Promise<KubescapeBinaryInfo> {
-    const localPath = await getKubescapePath();
-    const platform = os.platform();
-    const kubescapeName = "kubescape" + (platform == "win32" ? ".exe" : "");
-    const searchedPath = expend(localPath + "/" + kubescapeName)
+export async function updateKubescape(needsLatest : boolean) : Promise<boolean> {
+    /* set download url */
+    let binaryUrl: string
 
-    return new Promise<KubescapeBinaryInfo>(resolve => {
-        let binayInfo = new KubescapeBinaryInfo()
-        fs.stat(searchedPath, err => {
-            if (!err) {
-                binayInfo.isInstalled = true
-                binayInfo.path = searchedPath
-            }
-            resolve(binayInfo)
-        })
-    })
-}
+    /* platform information */
+    const pkg = vscode.extensions.getExtension(PACKAGE_NAME)?.packageJSON;
+    const pp = pkg.config.platformPackages
+    const platform = os.platform()
+    const platformPackage = pp.platforms[platform]
 
-export async function ensureKubescapeTool() {
-    let kubescapeBinaryInfo = await isKubescapeInstalled()
-
-    let needsUpdate = !kubescapeBinaryInfo.isInstalled
-
-    /* Choose between version tiers */
-    const config = kubescapeConfig.getKubescapeConfig()
-    const needsLatest = config[CONFIG_VERSION_TIER] && config[CONFIG_VERSION_TIER] === "latest"
-
-    if (!needsUpdate) {
-        const kubescapeVersion = await getKubescapeVersion()
-
-        /* kubescape exists - check letest version */
-        needsUpdate = needsLatest && !kubescapeVersion.isLatest
-
-        if (!needsUpdate && !needsLatest) {
-            /* not latest version - verify stable version  */
-            needsUpdate = kubescapeVersion.version !== PACKAGE_STABLE_BUILD
-        } 
+    if (platformPackage == undefined) {
+        Logger.error(`Platform '${platform}' is not supported`, true);
+        return false
     }
 
-    if (needsUpdate) {
-
-        /* set download url */
-        let binaryUrl: string
-
-        /* platform information */
-        let pkg = vscode.extensions.getExtension(PACKAGE_NAME)?.packageJSON;
-        let pp = pkg.config.platformPackages;
-        let platform = os.platform();
-        let platformPackage = pp.platforms[platform];
-        if (platformPackage == undefined) {
-            Logger.error(`Platform '${platform}' is not supported`, true);
-            return false;
-        }
-
-        if (needsLatest) {
-            binaryUrl = await getLetestVersionUrl();
-        } else {
-            binaryUrl = `${PACKAGE_DOWNLOAD_BASE_URL}/${PACKAGE_STABLE_BUILD}`
-        }
-
-        binaryUrl += `/${platformPackage}`
-
-
-        let kubescapeDir = await getKubescapePath()
-
-        const kubescapeName = "kubescape" + (IS_WINDOWS ? ".exe" : "");
-        const kubescapeFullPath = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, !IS_WINDOWS);
-        if (kubescapeFullPath.length > 0) {
-            kubescapeBinaryInfo.isInstalled = true
-        }
+    if (needsLatest) {
+        binaryUrl = await getLetestVersionUrl();
+    } else {
+        binaryUrl = `${PACKAGE_DOWNLOAD_BASE_URL}/${PACKAGE_STABLE_BUILD}`
     }
 
-    return kubescapeBinaryInfo.isInstalled
+    binaryUrl += `/${platformPackage}`
+
+    const kubescapeDir = await getKubescapeDir()
+
+    const kubescapeName = "kubescape" + (IS_WINDOWS ? ".exe" : "");
+    const kubescapeFullPath = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, !IS_WINDOWS);
+    if (kubescapeFullPath.length > 0) {
+        return true
+    }
+
+    return false
 }

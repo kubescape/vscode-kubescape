@@ -1,23 +1,26 @@
 import * as vscode from 'vscode'
-
-import { AbortController } from 'abort-controller';
-
+import { AbortController } from 'abort-controller'
 
 import * as install from './install'
 import * as scan from './scan'
 import * as info from './info'
+import * as kubescapeConfig from './config'
+import * as ui from '../utils/ui'
 
 import { Logger } from '../utils/log'
+import { CONFIG_VERSION_TIER, ERROR_KUBESCAPE_NOT_INSTALLED } from './globals';
 
 export async function doctor() {
-    let kubescapeBinaryInfo = await install.isKubescapeInstalled();
+    let kubescapeBinaryInfo = info.KubescapeBinaryInfo.instance
     if (!kubescapeBinaryInfo.isInstalled) {
         let options : string[] = ["Yes", "No"]
         vscode.window.showInformationMessage("Kubescape is not installed, install now?", ...options).then(selected => {
             switch (selected) {
                 case options[0]:
-                    /* Install kubescape */
-                    install.ensureKubescapeTool() 
+                    /* Choose between version tiers */
+                    const config = kubescapeConfig.getKubescapeConfig()
+                    const needsLatest = config[CONFIG_VERSION_TIER] && config[CONFIG_VERSION_TIER] === "latest"
+                    install.updateKubescape(needsLatest)
                     break;
                 case options[1]:
                     break;
@@ -26,8 +29,7 @@ export async function doctor() {
          })
         return;
     } else {
-        let kubescapeVersion = await info.getKubescapeVersion()
-        Logger.debug(`Kubescape is installed correctly ${kubescapeVersion.version} (${kubescapeVersion.isLatest ? 'latest' : 'stable'})`, true);
+        Logger.debug(`Kubescape is installed correctly ${kubescapeBinaryInfo.version} (${kubescapeBinaryInfo.isLatestVersion ? 'latest' : 'stable'})`, true);
     }
 }
 
@@ -43,33 +45,28 @@ export async function scanYaml() {
         return;
     }
 
-    scan.kubescapeScanYaml(currentFile.document.uri.fsPath, "nsa", true)
+    scan.kubescapeScanYaml(currentFile.document.uri.fsPath, true)
 }
 
-export async function listAvailableFrameworks() {
+export async function installFromAvailableFrameworks() {
 
-    let cancel = new AbortController()
-    vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
-        title: "Listing supported frameworks",
-        cancellable: cancel !== null
-    }, async (_, canc) => {
-        if (cancel) {
-            canc.onCancellationRequested(()=>{
-                cancel.abort()
-            })
-        }
-        let frameworks = await info.getAvailableFrameworks()
+    const kubescapeBinaryInfo = info.KubescapeBinaryInfo.instance
+    if (!kubescapeBinaryInfo.isInstalled) {
+        Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED, true)
+        return
+    }
 
-        if (frameworks.length) {
-
-            vscode.window.showQuickPick(frameworks).then(picked => {
+    const cancel = new AbortController
+    ui.progress("Checking for available frameworks", cancel, false, async ()=>{
+        const availableFrameworks = await kubescapeBinaryInfo.getUninstalledFramework()
+        if (availableFrameworks.length) {
+            vscode.window.showQuickPick(availableFrameworks).then(picked => {
                 if (picked) {
-                    vscode.env.clipboard.writeText(picked)
-                    Logger.info(`${picked} has been copied to clipboard`, true)
+                    kubescapeBinaryInfo.installFrameworks([picked])
                 }
             })
+        } else {
+            Logger.info("All available frameworks are installed.", true)
         }
-
-    })
+    })   
 }

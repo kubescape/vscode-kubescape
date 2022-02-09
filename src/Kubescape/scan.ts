@@ -1,10 +1,13 @@
 import * as vscode from 'vscode'
 import { exec } from 'child_process'
+import { AbortController } from 'abort-controller'
 
-import * as install from './install'
+import * as ui from '../utils/ui'
 import { Logger } from '../utils/log'
 import { ResourceHighlightsHelperService } from './yamlParse'
 import { COMMAND_SCAN_FRAMEWORK, ERROR_KUBESCAPE_NOT_INSTALLED } from './globals'
+import { KubescapeBinaryInfo } from './info'
+import '../utils/extensionMethods'
 
 let collections : any = {}
 
@@ -17,38 +20,24 @@ type KubescapeReport = {
     code : string
 }
 
-function parseJsonSafe(str : string) {
-    let obj
-
-    try {
-        if (str && str[0] !== '[') {
-            str = '[' + str + ']'
-        }
-        obj = JSON.parse(str)
-    } catch {
-        obj = undefined
-        Logger.warning(`Not valid JSON: ${str}`)
-    }
-
-    return obj
-}
-
 function getFormattedField(str : string, lable? : string) {
     return str.length > 0 ? `\n${lable}: ${str}\n` : ""
 }
 
-function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : boolean, collection : vscode.Diagnostic[]) {
+function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : boolean, collection : any) {
     const heading =`${report.framework} ${report.id}` 
-    collection.push({
-        code: report.code,
-        message: `${heading}\n${'_'.repeat(heading.length)}\n` +
-            `${getFormattedField(report.alert, "Alert")}` +
-            `${getFormattedField(report.description, "Description")}` +
-            `${getFormattedField(report.remediation, "Remediation")}`,
-        range: range,
-        severity: status ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
-        source: 'Kubescape',
-    })
+    if (collection && !collection[report.id]) {
+        collection[report.id] = {
+            code: report.code,
+            message: `${heading}\n${'_'.repeat(heading.length)}\n` +
+                `${getFormattedField(report.alert, "Alert")}` +
+                `${getFormattedField(report.description, "Description")}` +
+                `${getFormattedField(report.remediation, "Remediation")}`,
+            range: range,
+            severity: status ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
+            source: 'Kubescape',
+        }
+    }
 }
 
 function processKubescapeResult(res : any, filePath : string) {
@@ -69,7 +58,7 @@ function processKubescapeResult(res : any, filePath : string) {
         for (let framework of res) {
             let frameWorkFailedPaths : boolean = false
             for (let ctrlReport of framework.controlReports) {
-                if (collections && collections[ctrlReport.id]) continue
+                if (problems && problems[ctrlReport.id]) continue
                 const has_failed = ctrlReport.failedResources > 0
                 const has_warn = ctrlReport.warningResources > 0
                 if (has_failed || has_warn) {
@@ -108,35 +97,38 @@ function processKubescapeResult(res : any, filePath : string) {
                 Logger.info(`Framework ${framework.name} has no failed paths to mark`)
             }
         }
-        collections[filePath].set(currentFileUri, problems);
+        collections[filePath].set(currentFileUri, Object.keys(problems).map(problemId => problems[problemId]));
     }
 }
 
-export async function kubescapeScanYaml(yamlPath : string, frameworks : string, displayOutput : boolean = false) : Promise<void> {
-    const kubescapeBinaryInfo : install.KubescapeBinaryInfo = await install.isKubescapeInstalled()
+export async function kubescapeScanYaml(yamlPath : string, displayOutput : boolean = false) : Promise<void> {
+    const kubescapeBinaryInfo : KubescapeBinaryInfo = KubescapeBinaryInfo.instance
 
     if (!kubescapeBinaryInfo.isInstalled) {
         Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED, true)
         throw new Error
     }
 
-    const cmd = `${kubescapeBinaryInfo.path} ${COMMAND_SCAN_FRAMEWORK} ${frameworks} ${yamlPath} --format json`
+    const useArtifactsFrom = `--use-artifacts-from ${kubescapeBinaryInfo.directory}`
+    const scanFrameworks = kubescapeBinaryInfo.frameworksNames.join(",")
 
-    vscode.window.withProgress({
-        location: displayOutput ? vscode.ProgressLocation.Notification : vscode.ProgressLocation.Window,
-        title: "Scanning",
-        cancellable: false
-    }, () => {
-        return new Promise<void>(resolve => {
+    const cmd = `${kubescapeBinaryInfo.path} ${COMMAND_SCAN_FRAMEWORK} ${useArtifactsFrom} ${scanFrameworks} ${yamlPath} --format json`
+
+    const cancel = new AbortController
+    const scanResults = await ui.progress("Kubescape scanning", cancel, !displayOutput, async () => {
+        return new Promise<any>(resolve => {
             exec(cmd,
                 async (err, stdout, stderr) => {
                     if (err) {
                         Logger.error(stderr)
-                    } else {
-                        let res = parseJsonSafe(stdout)
-                        if (res) {
-                            processKubescapeResult(res, yamlPath)
-                        }
+                        resolve({})
+                        return
+                    }
+
+                    const res = stdout.toJsonArray()
+                    if (!res) {
+                        resolve({})
+                        return
                     }
 
                     if (displayOutput) {
@@ -148,8 +140,10 @@ export async function kubescapeScanYaml(yamlPath : string, frameworks : string, 
                         })
                     }
 
-                    resolve()
+                    resolve(res)
                 })
         })
     })
+
+    processKubescapeResult(scanResults, yamlPath)
 }
