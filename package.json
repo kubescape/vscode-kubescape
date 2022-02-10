@@ -132,7 +132,7 @@
       "url": "@PLATFORM_PACKAGE_URL@",
       "platforms": {
         "linux": "kubescape-ubuntu-latest",
-        "darvin": "kubescape-macos-latest",
+        "darwin": "kubescape-macos-latest",
         "win32": "kubescape-windows-latest"
       }
     }
