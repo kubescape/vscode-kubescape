@@ -2,6 +2,12 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.1.1]
+Minor fixes
+
+- Documentation update
+- Mac fix
+
 ## [0.1.0]
 Major changes!
 
