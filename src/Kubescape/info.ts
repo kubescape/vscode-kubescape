@@ -336,16 +336,20 @@ export class KubescapeBinaryInfo {
 
             /* 4. Install kubescape if needed */
             /* ---------------------------------------------------------------*/
-            if (needsUpdate) {
-                this._isInstalled = await install.updateKubescape(needsLatest)
-                if (!this.isInstalled) {
-                    Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED)
-                    cancel.abort()
-                    return
+            if (!this._path.isCustom) {
+                if (needsUpdate) {
+                    this._isInstalled = await install.updateKubescape(needsLatest)
+                    if (!this.isInstalled) {
+                        Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED)
+                        cancel.abort()
+                        return
+                    }
+    
+                    /* Get version again after update */
+                    this._versionInfo = await this.getKubescapeVersion()
                 }
-
-                /* Get version again after update */
-                this._versionInfo = await this.getKubescapeVersion()
+            } else {
+                Logger.warning("Using kubescape from a custom directory")
             }
             completedTasks++
             progress(completedTasks, tasksCount)

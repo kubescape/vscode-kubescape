@@ -26,10 +26,11 @@ import {
     PACKAGE_STABLE_BUILD,
     COMMAND_GET_HELP,
 } from './globals'
+import { KubescapePath } from './types'
 
-type KubescapePath = {
-    fullPath : string,
-    baseDir : string
+type KubescapeDir = {
+    directory : string,
+    isCustom : boolean
 }
 
 async function downloadFile(url : string, downloadPath : string, fileName : string, executable = false) : Promise<string> {
@@ -99,7 +100,9 @@ export async function isKubescapeInstalled(kubescapePath : string): Promise<bool
     })
 }
 
-export async function getKubescapeDir() : Promise<string> {
+export async function getKubescapeDir() : Promise<KubescapeDir> {
+    let isCustom = false
+
     /* Enable override from configuration */
     let kubescape_dir = await new Promise<string | undefined>(resolve => {
         const config = kubescapeConfig.getKubescapeConfig()
@@ -112,6 +115,7 @@ export async function getKubescapeDir() : Promise<string> {
 
         fs.stat(dir, err => {
             if (!err) {
+                isCustom = true
                 resolve(dir)
                 return
             }
@@ -134,14 +138,18 @@ export async function getKubescapeDir() : Promise<string> {
         })
     }
 
-    return kubescape_dir
+    return {
+        directory : kubescape_dir,
+        isCustom : isCustom
+    }
 }
 
 export async function getKubescapePath() : Promise<KubescapePath> {
-    let kubescape_dir = await getKubescapeDir()
+    let kubescape_dir_info = await getKubescapeDir()
     return {
-        baseDir : kubescape_dir,
-        fullPath : getOsKubescapeName(kubescape_dir)
+        baseDir : kubescape_dir_info.directory,
+        fullPath : getOsKubescapeName(kubescape_dir_info.directory),
+        isCustom : kubescape_dir_info.isCustom
     }
 }
 
@@ -177,7 +185,7 @@ export async function updateKubescape(needsLatest : boolean) : Promise<boolean> 
     const kubescapeDir = await getKubescapeDir()
 
     const kubescapeName = "kubescape" + (IS_WINDOWS ? ".exe" : "");
-    const kubescapeFullPath = await downloadFile(binaryUrl, kubescapeDir, kubescapeName, !IS_WINDOWS);
+    const kubescapeFullPath = await downloadFile(binaryUrl, kubescapeDir.directory, kubescapeName, !IS_WINDOWS);
     if (kubescapeFullPath.length > 0) {
         return true
     }

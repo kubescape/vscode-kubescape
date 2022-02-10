@@ -10,7 +10,8 @@ export class KubescapeVersion {
 
 export type KubescapePath = {
     fullPath : string,
-    baseDir : string
+    baseDir : string,
+    isCustom : boolean
 }
 
 export type KubescapeFramework = {
