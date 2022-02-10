@@ -387,7 +387,7 @@ export class KubescapeBinaryInfo {
                     await this.installFrameworks(requiredFrameworks)
                 }
             } else {
-                /* Download all artifatcs including all frameworks */
+                /* Download all artifacts including all frameworks */
                 const allFrameworks = await this.downloadAllFrameworks()
                 appendToFrameworks(this._frameworks, resolveKubescapeFrameworks(allFrameworks))
             }
@@ -398,8 +398,8 @@ export class KubescapeBinaryInfo {
                 /* Use all the available frameworks */
                 scanFrameworks = Object.keys(this._frameworks)
             }
-            for (let framworkName of scanFrameworks) {
-                this._frameworks[framworkName].isInstalled = true
+            for (let frameworkName of scanFrameworks) {
+                this._frameworks[frameworkName].isInstalled = true
             }
 
             completedTasks++
