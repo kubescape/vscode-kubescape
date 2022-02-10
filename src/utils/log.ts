@@ -18,47 +18,51 @@ export class Logger {
         this.channel = vscode.window.createOutputChannel("kubescape")
     }
 
-    public static debug(message: string, ui = false) {
-        this._instance.channel.appendLine(message)
-        if (ui) vscode.window.showInformationMessage(message)
-        addToDebug(LogLevels.Debug, message)
-    }
+    private static log(level : LogLevels, message : string, ui : boolean) {
+        let outputConsole = console.debug
+        let uiOutput = (message: string, ...items: string[]) : Thenable<string | undefined> => new Promise(res=>{})
 
-    public static error(message: string, ui = false) {
-        this._instance.channel.appendLine(message)
-        if (ui) vscode.window.showErrorMessage(message)
-        addToDebug(LogLevels.Error, message)
-    }
-
-    public static info(message: string, ui = false) {
-        this._instance.channel.appendLine(message)
-        if (ui) vscode.window.showInformationMessage(message)
-        addToDebug(LogLevels.Info, message)
-    }
-
-    public static warning(message: string, ui = false) {
-        this._instance.channel.appendLine(message)
-        if (ui) vscode.window.showWarningMessage(message)
-        addToDebug(LogLevels.Warning, message)
-    }
-}
-
-function addToDebug(level : LogLevels, message : string) {
-    if (vscode.debug.activeDebugSession != undefined) {
-        switch (level) {
+        let longMessage = `${new Date().toISOString().replace(/T/, ' ').replace(/\..+/, '')} ${message}`
+        switch(level) {
             case LogLevels.Debug:
-                console.debug(message)
+                longMessage = `[debug] ${longMessage}`
                 break;
             case LogLevels.Error:
-                console.error(message)
+                longMessage = `[error] ${longMessage}`
+                uiOutput = vscode.window.showErrorMessage
+                outputConsole = console.error
                 break;
             case LogLevels.Warning:
-                console.warn(message)
+                longMessage = `[warn ] ${longMessage}`
+                uiOutput = vscode.window.showWarningMessage
+                outputConsole = console.warn
                 break;
             case LogLevels.Info:
-                console.info(message)
+                longMessage = `[info ] ${longMessage}`
+                uiOutput = vscode.window.showInformationMessage
+                outputConsole = console.info
                 break;
             default: break
         }
+
+        this._instance.channel.appendLine(longMessage)
+        outputConsole(longMessage)
+        if (ui) uiOutput(message)
+    }
+
+    public static debug(message: string, ui = false) {
+        this.log(LogLevels.Debug, message, ui)
+    }
+
+    public static error(message: string, ui = false) {
+        this.log(LogLevels.Error, message, ui)
+    }
+
+    public static info(message: string, ui = false) {
+        this.log(LogLevels.Info, message, ui)
+    }
+
+    public static warning(message: string, ui = false) {
+        this.log(LogLevels.Warning, message, ui)
     }
 }
