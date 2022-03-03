@@ -142,12 +142,15 @@ export async function kubescapeScanYaml(document : vscode.TextDocument, displayO
                     }
 
                     if (displayOutput) {
-                        const uri = vscode.Uri.parse('untitled:' + "Result");
-                        const doc = await vscode.workspace.openTextDocument(uri); // calls back into the provider
-                        let editor = await vscode.window.showTextDocument(doc, { preview: false });
-                        editor.edit((e) => {
-                            e.insert(new vscode.Position(0, 0), stdout)
-                        })
+                        // calls back into the provider
+                        const doc = await vscode.workspace.openTextDocument({
+                            language: "json", 
+                            content : JSON.stringify(res, undefined, 2)
+                        }); 
+                        await vscode.window.showTextDocument(doc, {
+                            viewColumn:vscode.ViewColumn.Beside, 
+                            preserveFocus: false, preview: false 
+                        });
                     }
 
                     resolve(res)
