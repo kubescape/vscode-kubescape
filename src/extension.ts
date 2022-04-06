@@ -7,9 +7,9 @@ import * as kubescapeConfig from './Kubescape/config'
 
 import { Logger } from './utils/log';
 import { KubescapeBinaryInfo } from './Kubescape/info';
-import { 
-	CONFIG_SCAN_ON_SAVE, 
-	ERROR_KUBESCAPE_NOT_INSTALLED 
+import {
+	CONFIG_SCAN_ON_SAVE,
+	ERROR_KUBESCAPE_NOT_INSTALLED
 } from './Kubescape/globals'
 
 // this method is called when your extension is activated

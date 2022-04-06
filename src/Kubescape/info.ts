@@ -24,8 +24,9 @@ import {
     COMMAND_DOWNLOAD_FRAMEWORK,
     CONFIG_VERSION_TIER,
     PACKAGE_STABLE_BUILD,
-    CONFIG_CUSTOM_FRAMWORKS_DIR,
-    CONFIG_REQUIRED_FRAMEWORKS
+    CONFIG_CUSTOM_FRAMEWORKS_DIR,
+    CONFIG_REQUIRED_FRAMEWORKS,
+    ENV_SKIP_UPDATE_CHECK
 } from './globals'
 
 
@@ -188,7 +189,7 @@ export class KubescapeBinaryInfo {
 
         let verInfo = new KubescapeVersion
         return new Promise<KubescapeVersion>(resolve=> {
-            exec(cmd, async (err, stdout, stderr) => {
+            exec(cmd, {env : { ENV_SKIP_UPDATE_CHECK : "1" }} , async (err, stdout, stderr) => {
                 if (err) {
                     Logger.error(stderr)
                     throw Error
@@ -308,6 +309,7 @@ export class KubescapeBinaryInfo {
             this._path = await install.getKubescapePath()
             completedTasks++
             progress(completedTasks, tasksCount)
+            Logger.debug(`Kubescape will be used from ${this.path}`)
 
             /* 2. Check installation state */
             /* ---------------------------------------------------------------*/
@@ -320,6 +322,7 @@ export class KubescapeBinaryInfo {
             /* ---------------------------------------------------------------*/
             const config = kubescapeConfig.getKubescapeConfig()
             const needsLatest = config[CONFIG_VERSION_TIER] && config[CONFIG_VERSION_TIER] === "latest"
+            Logger.debug(`Kubescape required version tier: ${needsLatest ? "latest" : "stable"}`)
 
             if (!needsUpdate) {
                 /* kubescape exists - check letest version */
@@ -353,12 +356,13 @@ export class KubescapeBinaryInfo {
             }
             completedTasks++
             progress(completedTasks, tasksCount)
+            Logger.debug(`Using Kubescape version: ${this.version}`)
 
             /* 5. Initialize frameworks */
             /* ---------------------------------------------------------------*/
             this._frameworks = {}
 
-            this._frameworkDir = config[CONFIG_CUSTOM_FRAMWORKS_DIR] 
+            this._frameworkDir = config[CONFIG_CUSTOM_FRAMEWORKS_DIR] 
             if (this._frameworkDir && this._frameworkDir.length > 0) {
                 /* Get custom frameworks from specified directories */
                 try {
@@ -404,6 +408,7 @@ export class KubescapeBinaryInfo {
 
             completedTasks++
             progress(completedTasks, tasksCount)
+            Logger.debug(`Loaded frameworks ${this.frameworksNames}`)
         })
     }
 }
