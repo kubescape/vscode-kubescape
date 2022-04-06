@@ -14,19 +14,20 @@ let collections : any = {}
 type KubescapeReport = { 
     framework : string
     id: string, 
+    name : string,
     alert: string, 
     description : string,  
     remediation : string,
     code : string
 }
 
-function getFormattedField(str : string, lable? : string) {
-    return str.length > 0 ? `\n${lable}: ${str}\n` : ""
+function getFormattedField(str : string, label? : string) {
+    return str.length > 0 ? `\n${label}: ${str}\n` : ""
 }
 
 function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : boolean, collection : any) {
-    const heading =`${report.framework} ${report.id}` 
     if (collection && !collection[report.id]) {
+        const heading =`${report.name}` 
         collection[report.id] = {
             code: report.code,
             message: `${heading}\n${'_'.repeat(heading.length)}\n` +
@@ -35,7 +36,7 @@ function addDiagnostic(report : KubescapeReport, range : vscode.Range, status : 
                 `${getFormattedField(report.remediation, "Remediation")}`,
             range: range,
             severity: status ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
-            source: 'Kubescape',
+            source: `https://hub.armo.cloud/docs/${report.id}`,
         }
     }
 }
@@ -81,6 +82,7 @@ function processKubescapeResult(res : any, filePath : string) {
                                     let kubescapeReport: KubescapeReport = {
                                         framework: framework.name,
                                         id: ctrlReport.id,
+                                        name : ctrlReport.name,
                                         alert: ruleResponse.alertMessage,
                                         description: ctrlReport.description,
                                         remediation: ctrlReport.remediation,
