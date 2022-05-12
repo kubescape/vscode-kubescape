@@ -1,14 +1,15 @@
 import * as vscode from 'vscode';
 
+import { IKubescapeConfig, KubescapeApi } from '@kubescape/install'
+
 import * as kubescape from './Kubescape/kubescape'
 import * as scan from './Kubescape/scan'
 import * as contextHelper from './utils/context'
-import * as kubescapeConfig from './Kubescape/config'
-
+import { KubescapeConfig } from './Kubescape/config'
 import { Logger } from './utils/log';
-import { KubescapeBinaryInfo } from './Kubescape/info';
+import { VscodeUi } from './utils/ui'
+
 import {
-	CONFIG_SCAN_ON_SAVE,
 	ERROR_KUBESCAPE_NOT_INSTALLED
 } from './Kubescape/globals'
 
@@ -25,11 +26,11 @@ export async function activate(context: vscode.ExtensionContext) {
 		subscriptions.push(vscode.commands.registerCommand(fullFuncName, () => eval(`${fullFuncName}()`)))
 	}
 
-	const kubescapeBinaryInfo = KubescapeBinaryInfo.instance
-	await initializeExtension(kubescapeBinaryInfo)
+	const kubescapeApi = KubescapeApi.instance
+	await initializeExtension(kubescapeApi)
 
 
-	if (!kubescapeBinaryInfo.isInstalled) {
+	if (!kubescapeApi.isInstalled) {
 		Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED)
 		throw new Error
 	}
@@ -66,9 +67,7 @@ function addOnSaveTextDocument(context : vscode.ExtensionContext) {
 			return;
 		}
 
-		const config = kubescapeConfig.getKubescapeConfig(document.uri)
-
-		if (!!config[CONFIG_SCAN_ON_SAVE] && config[CONFIG_SCAN_ON_SAVE] !== "none") {
+		if (KubescapeConfig.instance.scanOnSave) {
 			if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
 				scan.kubescapeScanYaml(document)
 			}
@@ -86,6 +85,24 @@ function addOnOpenTextDocument(context : vscode.ExtensionContext) {
 	}, null, context.subscriptions);
 }
 
-async function initializeExtension(kubescapeBinaryInfo : KubescapeBinaryInfo) {
-	await kubescapeBinaryInfo.setup()
+async function initializeExtension(kubescapeApi : KubescapeApi) {
+    const config = KubescapeConfig.instance
+
+	await kubescapeApi.setup(new VscodeUi, new class implements IKubescapeConfig {
+        get version() : string {
+            return config.kubescapeVersion
+        }
+        get frameworksDirectory() : string | undefined {
+            return config.customFrameworkDirectory
+        }
+        get baseDirectory(): string {
+            return config.kubescapeDir
+        }
+        get requiredFrameworks(): string[] | undefined {
+            return config.requiredFrameworks
+        }
+        get scanFrameworks(): string[] | undefined {
+            return config.scanFrameworks
+        }
+    })
 }

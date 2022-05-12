@@ -19,3 +19,8 @@ export type KubescapeFramework = {
     isInstalled : boolean,
     location : string
 }
+
+export type KubescapeDir = {
+    directory : string,
+    isCustom : boolean
+}

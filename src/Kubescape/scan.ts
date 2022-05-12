@@ -1,13 +1,11 @@
 import * as vscode from 'vscode'
-import { exec } from 'child_process'
-import { AbortController } from 'abort-controller'
 
-import * as ui from '../utils/ui'
+import { YamlHighlighter } from '@armosec/yamlparse'
+import { KubescapeApi } from '@kubescape/install'
+
+import { VscodeUi } from '../utils/ui'
 import { Logger } from '../utils/log'
-import { ResourceHighlightsHelperService } from './yamlParse'
-import { COMMAND_SCAN_FRAMEWORK, ERROR_KUBESCAPE_NOT_INSTALLED } from './globals'
-import { KubescapeBinaryInfo } from './info'
-import '../utils/extensionMethods'
+import { ERROR_KUBESCAPE_NOT_INSTALLED } from './globals'
 
 let collections : any = {}
 
@@ -69,8 +67,8 @@ function processKubescapeResult(res : any, filePath : string) {
                         for (let ruleResponse of (ruleReport.ruleResponses ? ruleReport.ruleResponses : [])) {
                             for (let fPath of (ruleResponse.failedPaths ? ruleResponse.failedPaths : [])) {
                                 if (fPath === "") continue
-                                const steps = ResourceHighlightsHelperService.splitPathToSteps(fPath)
-                                let position = ResourceHighlightsHelperService.getStartIndexAcc(steps, lines)
+                                const steps = YamlHighlighter.splitPathToSteps(fPath)
+                                let position = YamlHighlighter.getStartIndexAcc(steps, lines)
 
                                 if (position.startIndex > 0) {
                                     let start = position.prevIndent
@@ -111,54 +109,32 @@ export function removeFileDiagnostics(filePath : string) {
 }
 
 export async function kubescapeScanYaml(document : vscode.TextDocument, displayOutput : boolean = false) : Promise<void> {
-    if (!document || document.isUntitled) return
+    if (!document || document.isUntitled) {
+        Logger.error('Scanning only works for real documents', true)
+        return
+    }
 
     const yamlPath = document.uri.fsPath
-    const kubescapeBinaryInfo : KubescapeBinaryInfo = KubescapeBinaryInfo.instance
+    const kubescapeApi = KubescapeApi.instance
 
-    if (!kubescapeBinaryInfo.isInstalled) {
+    if (!kubescapeApi.isInstalled) {
         Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED, true)
         throw new Error
     }
 
-    const useArtifactsFrom = `--use-artifacts-from "${kubescapeBinaryInfo.frameworkDirectory}"`
-    const scanFrameworks = kubescapeBinaryInfo.frameworksNames.join(",")
+    const scanResults = await kubescapeApi.scanYaml(new VscodeUi, yamlPath)
 
-    const cmd = `${kubescapeBinaryInfo.path} ${COMMAND_SCAN_FRAMEWORK} ${useArtifactsFrom} ${scanFrameworks} ${yamlPath} --format json`
-
-    const cancel = new AbortController
-    const scanResults = await ui.progress("Kubescape scanning", cancel, !displayOutput, async () => {
-        return new Promise<any>(resolve => {
-            exec(cmd,
-                async (err, stdout, stderr) => {
-                    if (err) {
-                        Logger.error(stderr)
-                        resolve({})
-                        return
-                    }
-
-                    const res = stdout.toJsonArray()
-                    if (!res) {
-                        resolve({})
-                        return
-                    }
-
-                    if (displayOutput) {
-                        // calls back into the provider
-                        const doc = await vscode.workspace.openTextDocument({
-                            language: "json", 
-                            content : JSON.stringify(res, undefined, 2)
-                        }); 
-                        await vscode.window.showTextDocument(doc, {
-                            viewColumn:vscode.ViewColumn.Beside, 
-                            preserveFocus: false, preview: false 
-                        });
-                    }
-
-                    resolve(res)
-                })
-        })
-    })
+    if (displayOutput) {
+        // calls back into the provider
+        const doc = await vscode.workspace.openTextDocument({
+            language: "json", 
+            content : JSON.stringify(scanResults, undefined, 2)
+        }); 
+        await vscode.window.showTextDocument(doc, {
+            viewColumn:vscode.ViewColumn.Beside,
+            preserveFocus: false, preview: false
+        });
+    }
 
     processKubescapeResult(scanResults, yamlPath)
 }

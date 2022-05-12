@@ -36,16 +36,8 @@
   "contributes": {
     "commands": [
       {
-        "command": "kubescape.doctor",
-        "title": "Kubescape: Doctor"
-      },
-      {
         "command": "kubescape.scanYaml",
         "title": "Kubescape: Scan YAML"
-      },
-      {
-        "command": "kubescape.installFromAvailableFrameworks",
-        "title": "Kubescape: Get more frameworks"
       }
     ],
     "configuration": {
@@ -138,6 +130,8 @@
     }
   },
   "dependencies": {
+    "@armosec/yamlparse": "^0.1.0",
+    "@kubescape/install": "^0.3.5",
     "abort-controller": "^3.0.0",
     "node-fetch": "^2.6.0"
   }
