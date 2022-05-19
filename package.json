@@ -131,7 +131,7 @@
   },
   "dependencies": {
     "@armosec/yamlparse": "^0.1.0",
-    "@kubescape/install": "^0.3.5",
+    "@kubescape/install": "^0.3.6",
     "abort-controller": "^3.0.0",
     "node-fetch": "^2.6.0"
   }
