@@ -23,7 +23,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	// Subscribe all the exported functions in kubescape.ts
 	for (let exportedFunc of Object.keys(kubescape)){
 		let fullFuncName = `kubescape.${exportedFunc}`
-		subscriptions.push(vscode.commands.registerCommand(fullFuncName, () => eval(`${fullFuncName}()`)))
+		subscriptions.push(vscode.commands.registerCommand(fullFuncName, (args) => eval(`${fullFuncName}(args)`)))
 	}
 
 	const kubescapeApi = KubescapeApi.instance
