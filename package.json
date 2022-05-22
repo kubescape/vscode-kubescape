@@ -106,6 +106,7 @@
   ],
   "devDependencies": {
     "@types/glob": "^7.1.4",
+    "@types/jsdom": "^16.2.14",
     "@types/mocha": "^9.0.0",
     "@types/node": "14.x",
     "@types/node-fetch": "^2.5.7",
@@ -133,6 +134,7 @@
     "@armosec/yamlparse": "^0.1.0",
     "@kubescape/install": "^0.3.6",
     "abort-controller": "^3.0.0",
+    "jsdom": "^19.0.0",
     "node-fetch": "^2.6.0"
   }
 }

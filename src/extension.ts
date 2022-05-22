@@ -12,6 +12,7 @@ import { VscodeUi } from './utils/ui'
 import {
 	ERROR_KUBESCAPE_NOT_INSTALLED
 } from './Kubescape/globals'
+import { KubescapeCodeAction } from './Kubescape/diagnostic';
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
@@ -25,6 +26,12 @@ export async function activate(context: vscode.ExtensionContext) {
 		let fullFuncName = `kubescape.${exportedFunc}`
 		subscriptions.push(vscode.commands.registerCommand(fullFuncName, (args) => eval(`${fullFuncName}(args)`)))
 	}
+
+	subscriptions.push(
+		vscode.languages.registerCodeActionsProvider('yaml', new KubescapeCodeAction, {
+			providedCodeActionKinds: KubescapeCodeAction.providedCodeActionKinds
+		})
+	);
 
 	const kubescapeApi = KubescapeApi.instance
 	await initializeExtension(kubescapeApi)
