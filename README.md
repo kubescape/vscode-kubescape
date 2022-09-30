@@ -84,7 +84,7 @@ By default, I use a version of kubescape which is teseted more against integrati
 with this extension.
 
 If, however, one wishes to use the latest and greatest it can be configured via
-the `Version Tier` option by setting it to 'latest'
+the `Version Tier` option by setting it to 'latest'.
 
 ![kubescape-config](./images/kubescape-config.png)
 
