@@ -8,17 +8,17 @@
   },
   "license": "Apache",
   "icon": "images/logo.png",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "publisher": "kubescape",
   "engines": {
     "vscode": "^1.50.0"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/armosec/vscode-kubescape"
+    "url": "https://github.com/kubescape/vscode-kubescape"
   },
   "bugs": {
-    "url": "https://github.com/armosec/vscode-kubescape/issues"
+    "url": "https://github.com/kubescape/vscode-kubescape/issues"
   },
   "categories": [
     "Linters"
@@ -105,7 +105,7 @@
     "vscode.yaml"
   ],
   "devDependencies": {
-    "@types/glob": "^7.1.4",
+    "@types/glob": "^8.0.0",
     "@types/jsdom": "^16.2.14",
     "@types/mocha": "^9.0.0",
     "@types/node": "14.x",
@@ -115,10 +115,10 @@
     "@typescript-eslint/parser": "^4.31.1",
     "@vscode/test-electron": "^1.6.2",
     "eslint": "^7.32.0",
-    "glob": "^7.1.7",
-    "mocha": "^9.1.1",
+    "glob": "^8.0.3",
+    "mocha": "^10.1.0",
     "typescript": "^4.4.3",
-    "vsce": "^2.6.7"
+    "vsce": "^2.14.0"
   },
   "config": {
     "platformPackages": {
@@ -131,8 +131,8 @@
     }
   },
   "dependencies": {
-    "@armosec/yamlparse": "^0.1.0",
-    "@kubescape/install": "^0.3.6",
+    "@kubescape/yamlparse": "^0.1.0",
+    "@kubescape/install": "^0.4.0",
     "abort-controller": "^3.0.0",
     "jsdom": "^19.0.0",
     "node-fetch": "^2.6.0"

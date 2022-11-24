@@ -1,7 +1,7 @@
-import * as vscode from 'vscode'
+import * as vscode from 'vscode';
 import AbortController from "abort-controller";
 
-import { KubescapeUi } from '@kubescape/install'
+import { KubescapeUi } from '@kubescape/install';
 
 import { Logger } from './log';
 
@@ -26,8 +26,10 @@ export class VscodeUi implements KubescapeUi {
       cancellable: cancel !== null,
     };
     const result = vscode.window.withProgress(opts, async (progress, canc) => {
-      if (cancel)
+      if (cancel) {
         canc.onCancellationRequested((_) => cancel.abort());
+      }
+      
       let lastFraction = 0;
       return body(fraction => {
         if (fraction > lastFraction) {
@@ -44,7 +46,8 @@ export class VscodeUi implements KubescapeUi {
   debug(s: string) { Logger.debug(s); }
 
   async showHelp(message: string, url: string) {
-    if (await vscode.window.showInformationMessage(message, 'Open website'))
+    if (await vscode.window.showInformationMessage(message, 'Open website')) {
       vscode.env.openExternal(vscode.Uri.parse(url));
+    }
   }
 }

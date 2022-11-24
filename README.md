@@ -1,11 +1,11 @@
 # Kubescape
 
-Visual studio extension the utilize the power 💪 of [Kubescape](https://github.com/armosec/kubescape) directly into your
+Visual studio extension the utilize the power 💪 of [Kubescape](https://github.com/kubescape/kubescape) directly into your
 favorite text editor.
 
 ## ✨ Features
 
-### Scan yaml files and get analysis from Kubescape.
+### Scan yaml files and get analysis from Kubescape
 
 Yaml files can be scanned using a commands.
 You can access any of this extension commands by opening the Command Palette (Ctrl+Shift+P on Linux/Windows and Cmd+Shift+P on Mac), and then typing in the command name.
@@ -36,7 +36,7 @@ you can use the option `Dir Path` which a custom directory on your system.
 ### Scan triggers
 
 As for now, kubescape scan can take a while, so it might be unwise to run scans
-without a good reason (like a dirty file). 
+without a good reason (like a dirty file).
 I chose to do a background scan only when a new file is saved on the disk.
 
 To choose between available files to scan on save use the option `Scan On Save`.
@@ -94,7 +94,7 @@ This extension is available officially at either:
 
 - [Microsoft VScode Extensions Marketplace](https://marketplace.visualstudio.com/items?itemName=kubescape.kubescape)
 - [Open VSX Registry](https://open-vsx.org/extension/kubescape/kubescape)
-- [Kubescape Github Releases](https://github.com/armosec/kubescape/releases)
+- [Kubescape Github Releases](https://github.com/kubescape/kubescape/releases)
 
 ## 🗒️ Release Notes
 

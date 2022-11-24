@@ -1,6 +1,11 @@
 # Change Log
 
 All notable changes to the "kubescape" extension will be documented in this file.
+## [0.3.0]
+Major changes
+
+- Updated to latest @kubescape/install
+- Using newer Kubescape version and report format (v2)
 
 ## [0.1.1]
 Minor fixes

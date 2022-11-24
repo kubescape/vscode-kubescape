@@ -3,14 +3,14 @@ export interface IYamlHighlight {
     endIndex: number;
 }
 
-type startIndexAccType = { startIndex: number; prevIndent: number; tempMatch: RegExpMatchArray | null; };
+type StartIndexAccType = { startIndex: number; prevIndent: number; tempMatch: RegExpMatchArray | null; };
 
-function checkAndUpdateIndent(startIndexAcc : startIndexAccType, index : number) : boolean {
+function checkAndUpdateIndent(startIndexAcc : StartIndexAccType, index : number) : boolean {
   if (index >= startIndexAcc.prevIndent) {
-    startIndexAcc.prevIndent = index
-    return true
+    startIndexAcc.prevIndent = index;
+    return true;
   } else {
-    return false
+    return false;
   }
 }
 
@@ -41,13 +41,13 @@ export class ResourceHighlightsHelperService {
   }
 
 
-  static getStartIndexAcc(steps: string[], lines: string[]): startIndexAccType {
+  static getStartIndexAcc(steps: string[], lines: string[]): StartIndexAccType {
     const indentArray = '- ';
     // const indentArray = '  - ';
     const regExpForArray = new RegExp(/\[\d+]/);
     const regExpForArrayIndex = new RegExp(/\d+/);
 
-    return steps.reduce((startIndexAcc: startIndexAccType, step: string, stepIndex: number) => {
+    return steps.reduce((startIndexAcc: StartIndexAccType, step: string, stepIndex: number) => {
       const stepWithOutArr = step.replace(regExpForArray, '') + ':';
 
       if (startIndexAcc.tempMatch) {
@@ -55,7 +55,7 @@ export class ResourceHighlightsHelperService {
       } else {
         startIndexAcc.startIndex = lines.findIndex((line: string, indexLine: number) => {
           if (indexLine > startIndexAcc.startIndex) {
-            return checkAndUpdateIndent(startIndexAcc, line.indexOf(stepWithOutArr))
+            return checkAndUpdateIndent(startIndexAcc, line.indexOf(stepWithOutArr));
           }
 
           return false;
@@ -67,7 +67,7 @@ export class ResourceHighlightsHelperService {
       const isLastItem = stepIndex === (steps.length - 1);
 
       if (isLastItem && startIndexAcc.tempMatch) {
-        handleArrayMatch(startIndexAcc, lines, indentArray, indentArray)
+        handleArrayMatch(startIndexAcc, lines, indentArray, indentArray);
       }
 
       return startIndexAcc;
@@ -91,7 +91,7 @@ export class ResourceHighlightsHelperService {
   }
 }
 
-function handleArrayMatch(startIndexAcc: startIndexAccType, lines: string[], indentArray: string, searchTerm: string) {
+function handleArrayMatch(startIndexAcc: StartIndexAccType, lines: string[], indentArray: string, searchTerm: string) {
   if (startIndexAcc.tempMatch) {
 
     const arrayIndex = +startIndexAcc.tempMatch[0];
