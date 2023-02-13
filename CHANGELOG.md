@@ -2,7 +2,7 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
-## [0.3.2]
+## [0.3.3]
 
 - Updated @kubescape/install version (v0.4.2) - fixes a bug where control structure has changed in regolibrary, causing a failure in scan report parsing. 
 
