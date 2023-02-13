@@ -8,7 +8,7 @@
   },
   "license": "Apache",
   "icon": "images/logo.png",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "publisher": "kubescape",
   "engines": {
     "vscode": "^1.50.0"
@@ -132,7 +132,7 @@
   },
   "dependencies": {
     "@kubescape/yamlparse": "^0.1.0",
-    "@kubescape/install": "^0.4.0",
+    "@kubescape/install": "^0.4.2",
     "abort-controller": "^3.0.0",
     "jsdom": "^19.0.0",
     "node-fetch": "^2.6.0"
