@@ -14,6 +14,7 @@ The default behavior also scans YAML files on save 💾.
 Scanning results are marked and can be found in `vscode` 'PROBLEMS' tab. Some inofrmation can be viewed when hovering over marked positions.
 
 ![yaml-demo](./images/yaml-demo.gif)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fkubescape%2Fvscode-kubescape.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fkubescape%2Fvscode-kubescape?ref=badge_shield)
 
 ## 🔒 Requirements
 
@@ -97,3 +98,7 @@ This extension is available officially at either:
 ## 🗒️ Release Notes
 
 See [Change Log](./CHANGELOG.md)
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fkubescape%2Fvscode-kubescape.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fkubescape%2Fvscode-kubescape?ref=badge_large)
