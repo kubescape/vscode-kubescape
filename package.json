@@ -120,16 +120,6 @@
     "typescript": "^4.4.3",
     "vsce": "^2.14.0"
   },
-  "config": {
-    "platformPackages": {
-      "url": "@PLATFORM_PACKAGE_URL@",
-      "platforms": {
-        "linux": "kubescape-ubuntu-latest",
-        "darwin": "kubescape-macos-latest",
-        "win32": "kubescape-windows-latest"
-      }
-    }
-  },
   "dependencies": {
     "@kubescape/yamlparse": "^0.1.0",
     "@kubescape/install": "^0.4.2",
