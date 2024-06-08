@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { YamlHighlighter } from '@kubescape/yamlparse';
+import { YamlHighlighter } from './yamlParse';
 import { KubescapeApi } from '@kubescape/install';
 
 import { VscodeUi } from '../utils/ui';

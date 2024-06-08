@@ -14,7 +14,7 @@ function checkAndUpdateIndent(startIndexAcc : StartIndexAccType, index : number)
   }
 }
 
-export class ResourceHighlightsHelperService {
+export class YamlHighlighter {
 
   static splitPathToSteps(path: string): string[] {
     const splitRegExp = new RegExp(/[a-zA-Z]+|\[[^[]+]/, 'g');
@@ -33,9 +33,9 @@ export class ResourceHighlightsHelperService {
   }
 
   static getStartAndEndIndexes(steps: string[], lines: string[]): IYamlHighlight {
-    const startIndexAcc = ResourceHighlightsHelperService.getStartIndexAcc(steps, lines);
+    const startIndexAcc = YamlHighlighter.getStartIndexAcc(steps, lines);
     const startIndex = startIndexAcc.startIndex;
-    const endIndex = ResourceHighlightsHelperService.getEndIndex(startIndex, lines, !!startIndexAcc.tempMatch);
+    const endIndex = YamlHighlighter.getEndIndex(startIndex, lines, !!startIndexAcc.tempMatch);
 
     return { startIndex, endIndex };
   }
