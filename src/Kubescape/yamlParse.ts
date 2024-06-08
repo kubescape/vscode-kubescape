@@ -43,7 +43,6 @@ export class YamlHighlighter {
 
   static getStartIndexAcc(steps: string[], lines: string[]): StartIndexAccType {
     const indentArray = '- ';
-    // const indentArray = '  - ';
     const regExpForArray = new RegExp(/\[\d+]/);
     const regExpForArrayIndex = new RegExp(/\d+/);
 
@@ -66,7 +65,7 @@ export class YamlHighlighter {
 
       const isLastItem = stepIndex === (steps.length - 1);
 
-      if (isLastItem && startIndexAcc.tempMatch) {
+      if (isLastItem && startIndexAcc.tempMatch && (startIndexAcc.startIndex > -1)) {
         handleArrayMatch(startIndexAcc, lines, indentArray, indentArray);
       }
 
