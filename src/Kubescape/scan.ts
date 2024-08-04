@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 
-import { YamlHighlighter } from "../utils/yamlHandler/yamlParse";
+import { YamlParse } from "../utils/yamlHandler/yamlParse";
 import { KubescapeApi } from '@kubescape/install';
 
 import { VscodeUi } from '../utils/ui';
@@ -23,8 +23,8 @@ function handleFailedPaths(framework : any, ctrlReport : any, ruleResponse : any
         return;
     }
 
-    const steps = YamlHighlighter.splitPathToSteps(fPath);
-    let position = YamlHighlighter.getStartIndexAcc(steps, lines);
+    const steps = YamlParse.splitPathToSteps(fPath);
+    let position = YamlParse.getStartIndexAcc(steps, lines);
 
     if (position.startIndex > 0) {
         let start = position.prevIndent;
@@ -56,8 +56,9 @@ function handleFixedPaths(framework : any, ctrlReport : any, ruleResponse : any,
         return;
     }
 
-    const steps = YamlHighlighter.splitPathToSteps(fPath);
-    let position = YamlHighlighter.getStartIndexAcc(steps, lines);
+
+    const steps = YamlParse.splitPathToSteps(fPath);
+    let position = YamlParse.getStartIndexAcc(steps, lines);
 
     if (position.startIndex > 0) {
         let start = position.prevIndent;

@@ -1,4 +1,6 @@
+import { match } from "assert";
 import { Logger } from "../log";
+import { IYamlRangeWithFixSteps } from "./types";
 
 
 export type IYamlHighlight = {
@@ -17,7 +19,112 @@ function checkAndUpdateIndent(startIndexAcc : startIndexAccType, index : number)
   }
 }
 
-export class YamlHighlighter {
+export class YamlParse {
+
+  static getRangeFromPathWithFixSteps(path: string, lines: string[], currentLineIndex: number = 0, currentStepIndex: number = 0): IYamlRangeWithFixSteps {
+
+    const steps: string[] = this.splitPathToSteps(path);
+    const noOfSteps: number = steps.length;
+    const noOfLines: number = lines.length;
+    let startIndex: number = -1;
+    let endIndex: number = -1;
+    let startRow: number = -1;
+    let endRow: number = -1;
+    let fixSteps: string[] = [];
+    let matchNotFound: boolean = false;
+    let regExpForArray: RegExp = new RegExp(/\[\d+]/);
+    let isStepWithArray: boolean;
+    const regExpForArrayIndex: RegExp = new RegExp(/\d+/);
+    const indentArray: string = '- ';
+    let currentIndex: number = -1;
+
+    for(currentStepIndex; currentStepIndex<noOfSteps; currentStepIndex++){
+
+      const step = steps[currentStepIndex];
+      if(matchNotFound){
+        fixSteps.push(step);
+      }
+      else{
+        // Still misses edge case, where somewherere more nested something is present and should be considered. Will be added later. These types of errors are anyways not supposed to occur
+        let regExpForStep: RegExp;
+        isStepWithArray = regExpForArray.test(steps[currentStepIndex]);
+        if(isStepWithArray){
+          regExpForStep = new RegExp(step.replace(regExpForArray, '').trim() + "\s*:");
+        }
+        else{
+          regExpForStep = new RegExp(step+"\s*:");
+        }
+
+        matchNotFound = true;
+
+        for(; currentLineIndex<noOfLines; currentLineIndex++){
+          const line: string = lines[currentLineIndex];
+          let searchStartIndex: number = line.search(regExpForStep);
+
+          if(searchStartIndex !== -1){
+            if(isStepWithArray){
+              const match = step.match(regExpForArrayIndex);
+              const arrayIndex: number = match ? +match[0] : 0;
+              let arrayIndexCount: number = 0;
+              let arrayIndent: number | null = null;
+              while(currentLineIndex++ && currentLineIndex<noOfLines){
+                const nextLine: string = lines[currentLineIndex];
+                const nextLineIndent = nextLine.indexOf(indentArray);
+                if(nextLineIndent === -1){
+                  continue;
+                }
+                else{
+                  if(arrayIndent === null){
+                    arrayIndent = nextLineIndent;
+                  }
+                }
+                if(nextLineIndent === arrayIndent){
+                  if(arrayIndexCount === arrayIndex){
+                    startIndex = nextLineIndent;
+                    endIndex = nextLine.length;
+                    startRow = currentLineIndex;
+                    endRow = currentLineIndex;
+                    matchNotFound = false;
+                    currentIndex = nextLineIndent;
+                    break;
+                  }
+                  else{
+                    arrayIndexCount++;
+                  }
+                }
+              }
+            }
+            else{
+              if(searchStartIndex > currentIndex){
+                startIndex = searchStartIndex;
+                endIndex = line.length;
+                startRow = currentLineIndex;
+                endRow = currentLineIndex;
+                matchNotFound = false;
+                currentIndex = searchStartIndex;
+                break;
+              }
+            }
+          }
+          else{
+            continue;
+          }
+        }
+        if(matchNotFound){
+          fixSteps.push(step);
+        }
+      }
+
+    }
+
+    return {
+      startIndex: startIndex,
+      endIndex: endIndex,
+      startRowIndex: startRow,
+      endRowIndex: endRow,
+      fixSteps: fixSteps.length === steps.length? [] : fixSteps
+    }
+  }
 
   static splitPathToSteps(path: string): string[] {
     const splitRegExp = new RegExp(/[a-zA-Z]+|\[[^[]+]/, 'g');
@@ -36,9 +143,9 @@ export class YamlHighlighter {
   }
 
   static getStartAndEndIndexes(steps: string[], lines: string[]): IYamlHighlight {
-    const startIndexAcc = YamlHighlighter.getStartIndexAcc(steps, lines);
+    const startIndexAcc = YamlParse.getStartIndexAcc(steps, lines);
     const startIndex = startIndexAcc.startIndex;
-    const endIndex = YamlHighlighter.getEndIndex(startIndex, lines, !!startIndexAcc.tempMatch);
+    const endIndex = YamlParse.getEndIndex(startIndex, lines, !!startIndexAcc.tempMatch);
 
     return { startIndex, endIndex };
   }
