@@ -7,6 +7,7 @@ import { VscodeUi } from '../utils/ui';
 import { Logger } from '../utils/log';
 import { ERROR_KUBESCAPE_NOT_INSTALLED } from './globals';
 import { KubescapeDiagnostic, KubescapeReport, kubescapeDiagnosticCollections } from './diagnostic';
+import path = require('path');
 
 function handlePaths(framework : any, ctrlReport : any, ruleResponse : any, lines : string[], hasFailed : boolean) {
     for (let pathObj of (ruleResponse.paths ? ruleResponse.paths : [])) {
@@ -23,15 +24,11 @@ function handleFailedPaths(framework : any, ctrlReport : any, ruleResponse : any
         return;
     }
 
-    const steps = YamlParse.splitPathToSteps(fPath);
-    let position = YamlParse.getStartIndexAcc(steps, lines);
+    const parsedPath = YamlParse.getRangeFromPathWithFixSteps(fPath, lines);
 
-    if (position.startIndex > 0) {
-        let start = position.prevIndent;
-        let end = start + steps[steps.length - 1].length;
-        let row = position.startIndex;
-        const range = new vscode.Range(new vscode.Position(row, start),
-            new vscode.Position(row, end));
+    if (parsedPath.startIndex > 0) {
+        const range = new vscode.Range(new vscode.Position(parsedPath.startRowIndex, parsedPath.startIndex),
+            new vscode.Position(parsedPath.endRowIndex, parsedPath.endIndex));
 
         let kubescapeReport: KubescapeReport = {
             framework: framework.name,
@@ -41,8 +38,8 @@ function handleFailedPaths(framework : any, ctrlReport : any, ruleResponse : any
             remediation: ctrlReport.remediation,
             range : range,
             severity : hasFailed ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
-            path: fPath,
-            fix: undefined
+            path: parsedPath.fixSteps,
+            fix: null
         };
         KubescapeDiagnostic.instance.addReport(kubescapeReport);
     }
@@ -57,15 +54,11 @@ function handleFixedPaths(framework : any, ctrlReport : any, ruleResponse : any,
     }
 
 
-    const steps = YamlParse.splitPathToSteps(fPath);
-    let position = YamlParse.getStartIndexAcc(steps, lines);
+    const parsedPath = YamlParse.getRangeFromPathWithFixSteps(fPath, lines);
 
-    if (position.startIndex > 0) {
-        let start = position.prevIndent;
-        let end = start + steps[steps.length - 1].length;
-        let row = position.startIndex;
-        const range = new vscode.Range(new vscode.Position(row, start),
-            new vscode.Position(row, end));
+    if (parsedPath.startIndex > 0) {
+        const range = new vscode.Range(new vscode.Position(parsedPath.startRowIndex, parsedPath.startIndex),
+            new vscode.Position(parsedPath.endRowIndex, parsedPath.endIndex));
 
         let kubescapeReport: KubescapeReport = {
             framework: framework.name,
@@ -75,7 +68,7 @@ function handleFixedPaths(framework : any, ctrlReport : any, ruleResponse : any,
             remediation: ctrlReport.remediation,
             range : range,
             severity : hasFailed ? vscode.DiagnosticSeverity.Warning : vscode.DiagnosticSeverity.Information,
-            path: fPath,
+            path: parsedPath.fixSteps,
             fix: fValue
         };
         KubescapeDiagnostic.instance.addReport(kubescapeReport);
