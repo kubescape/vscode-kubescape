@@ -35,7 +35,7 @@ function handleFailedPaths(framework : any, ctrlReport : any, ruleResponse : any
 
         let kubescapeReport: KubescapeReport = {
             framework: framework.name,
-            id: ctrlReport.controlID,
+            id: ctrlReport.controlID+`: ${fPath}`,
             name: ctrlReport.name,
             description: ctrlReport.description,
             remediation: ctrlReport.remediation,
@@ -69,7 +69,7 @@ function handleFixedPaths(framework : any, ctrlReport : any, ruleResponse : any,
 
         let kubescapeReport: KubescapeReport = {
             framework: framework.name,
-            id: ctrlReport.controlID,
+            id: ctrlReport.controlID+`: ${fPath}`,
             name: ctrlReport.name,
             description: ctrlReport.description,
             remediation: ctrlReport.remediation,
