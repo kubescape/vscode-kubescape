@@ -12,8 +12,8 @@ export type KubescapeReport = {
     remediation : string,
     range : vscode.Range,
     severity : vscode.DiagnosticSeverity,
-    path : string,
-    fix : string | undefined
+    path : string[] | null,
+    fix : string | null
 };
 
 function getFormattedField(str : string, label? : string) {
@@ -98,17 +98,54 @@ export class KubescapeDiagnostic {
 
 export class KubescapeCodeAction implements vscode.CodeActionProvider {
 
+    // TODO: Add fixAll,
 	public static readonly providedCodeActionKinds = [
 		vscode.CodeActionKind.QuickFix
 	];
 
     private createFix(document: vscode.TextDocument, range: vscode.Range, ctrlReport: KubescapeReport): vscode.CodeAction | undefined {
-        const fix = new vscode.CodeAction(`Fix ${ctrlReport.path}`, vscode.CodeActionKind.QuickFix);
-        const elementPos = ctrlReport.path.lastIndexOf('.');
-        const element =  ctrlReport.path.substring(elementPos + 1);
-        const fixStr = `${element}: ${ctrlReport.fix}`;
+        let strPath: string = ctrlReport.path? ctrlReport.path.reduce((acc, curr) => `${acc}.${curr}`):"";
+        const fix = new vscode.CodeAction(`Set ${strPath} to value : ${ctrlReport.fix}`, vscode.CodeActionKind.QuickFix);
+        const lines = document.getText().split(new RegExp(/\n/));
+        let regExpForArray: RegExp = new RegExp(/\[\d+]/);
         fix.edit = new vscode.WorkspaceEdit();
-        fix.edit.replace(document.uri, new vscode.Range(ctrlReport.range.start, ctrlReport.range.end.translate(0, Number.MAX_SAFE_INTEGER)), fixStr);
+        const fixStr = ctrlReport.fix;
+        const fixPathSteps: string[] = ctrlReport.path || [];
+        const nonWhiteSpaceChar: RegExp = new RegExp(/[^\s+]/)
+        if(fixPathSteps.length > 0) {
+            let insertString = "";
+            let firstStartIndex: number | null = null;
+            let currentLineIndex: number = range.start.line;
+            let noOfLines: number = lines.length;
+            while(firstStartIndex === null && currentLineIndex<noOfLines) {
+                firstStartIndex = lines[currentLineIndex].search(nonWhiteSpaceChar);
+                currentLineIndex++;
+            }
+            let spaceStr: string = "";
+            if(firstStartIndex === null) {
+                firstStartIndex = ctrlReport.range.start.character+2;
+            }
+            for(let i = 0; i<firstStartIndex; i++) {
+                spaceStr += " ";
+            }
+            while(fixPathSteps.length > 0) {
+                let step = fixPathSteps.shift();
+                if(step && regExpForArray.test(step)) {
+                    step = step.replace(regExpForArray, '');
+                    step = "- "+step;
+                }
+                if(step) {
+                    insertString += `\n${spaceStr}${step}:`;
+                }
+                spaceStr += "  ";
+            }
+            insertString += ` ${fixStr}`
+            fix.edit.insert(document.uri, ctrlReport.range.end.translate(0, Number.MAX_SAFE_INTEGER), fixStr? insertString : "");
+        }
+        else{
+            fix.edit.replace(document.uri, new vscode.Range(new vscode.Position(ctrlReport.range.start.line,lines[ctrlReport.range.start.line].search(":")) , ctrlReport.range.end.translate(0, Number.MAX_SAFE_INTEGER)), fixStr? fixStr : "");
+        }
+
         return fix;
     }
 
