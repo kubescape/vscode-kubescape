@@ -24,6 +24,8 @@ function handleFailedPaths(framework : any, ctrlReport : any, ruleResponse : any
         return;
     }
 
+    const steps = YamlParse.splitPathToSteps(fPath);
+    let position = YamlParse.getStartIndexAcc(steps, lines);
     const parsedPath = YamlParse.getRangeFromPathWithFixSteps(fPath, lines);
 
     if (parsedPath.startIndex > 0) {
@@ -32,7 +34,7 @@ function handleFailedPaths(framework : any, ctrlReport : any, ruleResponse : any
 
         let kubescapeReport: KubescapeReport = {
             framework: framework.name,
-            id: ctrlReport.controlID,
+            id: ctrlReport.controlID+`: ${fPath}`,
             name: ctrlReport.name,
             description: ctrlReport.description,
             remediation: ctrlReport.remediation,
@@ -53,7 +55,8 @@ function handleFixedPaths(framework : any, ctrlReport : any, ruleResponse : any,
         return;
     }
 
-
+    const steps = YamlParse.splitPathToSteps(fPath);
+    let position = YamlParse.getStartIndexAcc(steps, lines);
     const parsedPath = YamlParse.getRangeFromPathWithFixSteps(fPath, lines);
 
     if (parsedPath.startIndex > 0) {
@@ -62,7 +65,7 @@ function handleFixedPaths(framework : any, ctrlReport : any, ruleResponse : any,
 
         let kubescapeReport: KubescapeReport = {
             framework: framework.name,
-            id: ctrlReport.controlID,
+            id: ctrlReport.controlID+`: ${fPath}`,
             name: ctrlReport.name,
             description: ctrlReport.description,
             remediation: ctrlReport.remediation,

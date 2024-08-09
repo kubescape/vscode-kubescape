@@ -95,7 +95,7 @@ export class YamlParse {
               }
             }
             else{
-              if(searchStartIndex >= currentIndex){
+              if(searchStartIndex > currentIndex){
                 startIndex = searchStartIndex;
                 endIndex = line.length;
                 startRow = currentLineIndex;
