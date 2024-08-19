@@ -1,5 +1,5 @@
 import { match } from "assert";
-import { Logger } from "../log";
+import { Logger } from "../../log";
 import { IYamlRangeWithFixSteps } from "./types";
 
 

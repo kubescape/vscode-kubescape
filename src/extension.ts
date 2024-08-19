@@ -1,18 +1,16 @@
 import * as vscode from 'vscode';
-
 import { IKubescapeConfig, KubescapeApi } from '@kubescape/install';
-
 import * as kubescape from './Kubescape/kubescape';
-import * as scan from './Kubescape/scan';
 import * as contextHelper from './utils/context';
-import { KubescapeConfig } from './Kubescape/config';
+import { KubescapeConfig } from './Kubescape/config/config';
 import { Logger } from './utils/log';
 import { VscodeUi } from './utils/ui';
-
 import {
 	ERROR_KUBESCAPE_NOT_INSTALLED
 } from './Kubescape/globals';
-import { KubescapeCodeAction } from './Kubescape/diagnostic';
+import { DiagnosticReportsCollection } from './Kubescape/diagnostics/diagnosticsReportCollection';
+import { kubescapeScanDocument } from './Kubescape/scan/scan';
+import { KubescapeCodeActionProvider } from './Kubescape/codeActions/codeActions';
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
@@ -28,8 +26,13 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	subscriptions.push(
-		vscode.languages.registerCodeActionsProvider('yaml', new KubescapeCodeAction, {
-			providedCodeActionKinds: KubescapeCodeAction.providedCodeActionKinds
+		vscode.languages.registerCodeActionsProvider('yaml', new KubescapeCodeActionProvider, {
+			providedCodeActionKinds: KubescapeCodeActionProvider.providedCodeActionKinds
+		})
+	);
+	subscriptions.push(
+		vscode.languages.registerCodeActionsProvider('dockerfile', new KubescapeCodeActionProvider, {
+			providedCodeActionKinds: KubescapeCodeActionProvider.providedCodeActionKinds
 		})
 	);
 
@@ -50,13 +53,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	/* Remove diagnostics on file close */
 	vscode.workspace.onDidCloseTextDocument(doc => {
-		scan.removeFileDiagnostics(doc.fileName);
+		DiagnosticReportsCollection.instance.removeFileDiagnostics(doc.fileName);
 	});
 
 	/* First scan of current file */
 	if (vscode.window.activeTextEditor) {
 		const doc = vscode.window.activeTextEditor.document;
-		scan.kubescapeScanYaml(doc);
+		kubescapeScanDocument(doc);
 	}
 
 	Logger.info("Kubescape is active");
@@ -70,13 +73,13 @@ export function deactivate() {
 
 function addOnSaveTextDocument(context : vscode.ExtensionContext) {
 	vscode.workspace.onDidSaveTextDocument((document) => {
-		if (document.languageId !== 'yaml') {
+		if (document.languageId !== 'yaml'  && document.languageId !== 'dockerfile') {
 			return;
 		}
 
 		if (KubescapeConfig.instance.scanOnSave) {
 			if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
-				scan.kubescapeScanYaml(document);
+				kubescapeScanDocument(document);
 			}
 		}
 	}, null, context.subscriptions);
@@ -84,11 +87,11 @@ function addOnSaveTextDocument(context : vscode.ExtensionContext) {
 
 function addOnOpenTextDocument(context : vscode.ExtensionContext) {
 	vscode.workspace.onDidOpenTextDocument((document) => {
-		if (document.languageId !== 'yaml') {
+		if (document.languageId !== 'yaml' && document.languageId !== 'dockerfile') {
 			return;
 		}
 
-		scan.kubescapeScanYaml(document);
+		kubescapeScanDocument(document);
 	}, null, context.subscriptions);
 }
 
