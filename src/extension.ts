@@ -1,22 +1,27 @@
 import * as vscode from 'vscode';
-
 import { IKubescapeConfig, KubescapeApi } from '@kubescape/install';
-
 import * as kubescape from './Kubescape/kubescape';
-import * as scan from './Kubescape/scan';
 import * as contextHelper from './utils/context';
-import { KubescapeConfig } from './Kubescape/config';
+import { KubescapeConfig } from './Kubescape/config/config';
 import { Logger } from './utils/log';
 import { VscodeUi } from './utils/ui';
-
 import {
 	ERROR_KUBESCAPE_NOT_INSTALLED
 } from './Kubescape/globals';
-import { KubescapeCodeAction } from './Kubescape/diagnostic';
+import { DiagnosticReportsCollection } from './Kubescape/diagnostics/diagnosticsReportCollection';
+import { kubescapeScanDocument } from './Kubescape/scan/scan';
+import { KubescapeCodeActionProvider } from './Kubescape/codeActions/codeActions';
+import { KubescapePanelWebviewProvider } from './ui/kubescapePanel/kubescapePanel';
 
 // this method is called when your extension is activated
 // your extension is activated the very first time the command is executed
 export async function activate(context: vscode.ExtensionContext) {
+
+	const provider = new KubescapePanelWebviewProvider(context.extensionUri);
+
+	context.subscriptions.push(
+		vscode.window.registerWebviewViewProvider(KubescapePanelWebviewProvider.viewType, provider));
+		
 	contextHelper.setExtensionContext(context);
 
 	let subscriptions = context.subscriptions;
@@ -28,8 +33,13 @@ export async function activate(context: vscode.ExtensionContext) {
 	}
 
 	subscriptions.push(
-		vscode.languages.registerCodeActionsProvider('yaml', new KubescapeCodeAction, {
-			providedCodeActionKinds: KubescapeCodeAction.providedCodeActionKinds
+		vscode.languages.registerCodeActionsProvider('yaml', new KubescapeCodeActionProvider, {
+			providedCodeActionKinds: KubescapeCodeActionProvider.providedCodeActionKinds
+		})
+	);
+	subscriptions.push(
+		vscode.languages.registerCodeActionsProvider('dockerfile', new KubescapeCodeActionProvider, {
+			providedCodeActionKinds: KubescapeCodeActionProvider.providedCodeActionKinds
 		})
 	);
 
@@ -42,6 +52,9 @@ export async function activate(context: vscode.ExtensionContext) {
 		throw new Error;
 	}
 
+	/* Update kubescape panel on document change */
+	updatePanelOnChangeDocument(context);
+
 	/* Auto scan on save */
 	addOnSaveTextDocument(context);
 
@@ -50,13 +63,13 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	/* Remove diagnostics on file close */
 	vscode.workspace.onDidCloseTextDocument(doc => {
-		scan.removeFileDiagnostics(doc.fileName);
+		DiagnosticReportsCollection.instance.removeFileDiagnostics(doc.fileName);
 	});
 
 	/* First scan of current file */
 	if (vscode.window.activeTextEditor) {
 		const doc = vscode.window.activeTextEditor.document;
-		scan.kubescapeScanYaml(doc);
+		kubescapeScanDocument(doc);
 	}
 
 	Logger.info("Kubescape is active");
@@ -70,13 +83,13 @@ export function deactivate() {
 
 function addOnSaveTextDocument(context : vscode.ExtensionContext) {
 	vscode.workspace.onDidSaveTextDocument((document) => {
-		if (document.languageId !== 'yaml') {
+		if (document.languageId !== 'yaml'  && document.languageId !== 'dockerfile') {
 			return;
 		}
 
 		if (KubescapeConfig.instance.scanOnSave) {
 			if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
-				scan.kubescapeScanYaml(document);
+				kubescapeScanDocument(document);
 			}
 		}
 	}, null, context.subscriptions);
@@ -84,11 +97,26 @@ function addOnSaveTextDocument(context : vscode.ExtensionContext) {
 
 function addOnOpenTextDocument(context : vscode.ExtensionContext) {
 	vscode.workspace.onDidOpenTextDocument((document) => {
-		if (document.languageId !== 'yaml') {
+		if (document.languageId !== 'yaml' && document.languageId !== 'dockerfile') {
 			return;
 		}
 
-		scan.kubescapeScanYaml(document);
+		kubescapeScanDocument(document);
+	}, null, context.subscriptions);
+}
+
+function updatePanelOnChangeDocument(context : vscode.ExtensionContext) {
+	vscode.window.onDidChangeActiveTextEditor((editor) => {
+		Logger.debug(`Active editor changed to ${JSON.stringify(editor)}`);
+		Logger.debug(editor?.document.fileName? `Active editor file name is ${editor.document.fileName}` : "No active editor file name");
+		if (!editor || editor.document.languageId !== 'yaml' && editor.document.languageId !== 'dockerfile') {
+			KubescapePanelWebviewProvider._resetHTMlContent();
+			return;
+		}
+		else{
+			Logger.debug(`Updat HTML content with scan results`)
+			KubescapePanelWebviewProvider.updateHTMLContentWithDiagnostic(DiagnosticReportsCollection.instance.get(editor.document.fileName));
+		}
 	}, null, context.subscriptions);
 }
 
