@@ -17,7 +17,7 @@ import { KubescapePanelWebviewProvider } from './ui/kubescapePanel/kubescapePane
 // your extension is activated the very first time the command is executed
 export async function activate(context: vscode.ExtensionContext) {
 
-	const provider = new KubescapePanelWebviewProvider(context.extensionUri);
+	const provider = KubescapePanelWebviewProvider.getInstance(context.extensionUri);
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(KubescapePanelWebviewProvider.viewType, provider));

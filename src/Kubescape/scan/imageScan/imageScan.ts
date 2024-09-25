@@ -4,6 +4,7 @@ import { get } from 'http';
 import { VscodeUi } from '../../../utils/ui';
 import { KubescapeApi } from '@kubescape/install';
 import { DiagnosticReportsCollection } from '../../diagnostics/diagnosticsReportCollection';
+import { KubescapePanelWebviewProvider } from '../../../ui/kubescapePanel/kubescapePanel';
 
 export async function kubescapeImageScan(document: vscode.TextDocument, lines: string[]): Promise<void> {
 
@@ -21,6 +22,7 @@ export async function kubescapeImageScan(document: vscode.TextDocument, lines: s
         images = getImagesFromYaml(lines);
     }
     else if(document.languageId == "dockerfile") { //dockerfile
+        KubescapePanelWebviewProvider.loadingPanel();
         images = getImagesFromDockerFile(lines);
     }
     else{

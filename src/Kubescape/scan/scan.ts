@@ -18,24 +18,26 @@ export async function kubescapeScanDocument(document: vscode.TextDocument, displ
     const problem = DiagnosticReportsCollection.instance;
     try{
         const kubescapeApi = KubescapeApi.instance;
-        KubescapePanelWebviewProvider.loadingPanel();
         if (!kubescapeApi.isInstalled) {
             Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED, true);
             throw new Error();
         }
-
+        
         problem.clear();
         const lines = document.getText().split(new RegExp(/\n/));
         if (document.languageId === "yaml") {
+            KubescapePanelWebviewProvider.loadingPanel();
             kubescapeScanYaml(document, displayOutput,lines).then(
                 ()=>{
                     DiagnosticReportsCollection.vscodeDiagnosticCollection.set(document.uri, problem.getVSDiagnostics(document.fileName));
+                    KubescapePanelWebviewProvider.updateWithCurrentFileDiagnostic();
                 }
             );
         }
         kubescapeImageScan(document,lines).then(
             ()=>{
                 DiagnosticReportsCollection.vscodeDiagnosticCollection.set(document.uri, problem.getVSDiagnostics(document.fileName));
+                KubescapePanelWebviewProvider.updateWithCurrentFileDiagnostic();
             }
         );
         scanCompleted = true;
@@ -45,11 +47,8 @@ export async function kubescapeScanDocument(document: vscode.TextDocument, displ
         // Update panel with Error message. Some error occured while scanning
         
     } finally {
-        if(scanCompleted){
-            KubescapePanelWebviewProvider.updateHTMLContentWithDiagnostic(problem.get(document.fileName));
-        }
+        Logger.info('------------------------------------------------_Scan Completed_------------------------------------------------');
         KubescapePanelWebviewProvider.stopLoadingPanel();
-        // stop loaders if any. make sure no other parallel scans are running
     }
     
 }
