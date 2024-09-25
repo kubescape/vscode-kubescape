@@ -2,9 +2,9 @@ import vscode = require('vscode');
 
 import * as path from 'path';
 
-import { expend } from '../utils/path';
-import { getExtensionContext } from '../utils/context';
-import { PACKAGE_STABLE_BUILD } from './globals';
+import { expend } from '../../utils/path';
+import { getExtensionContext } from '../../utils/context';
+import { PACKAGE_STABLE_BUILD } from '../globals';
 
 const CONFIG_SCAN_ON_SAVE = "scanOnSave";
 const CONFIG_SCAN_FRAMEWORKS = "scanFrameworks";

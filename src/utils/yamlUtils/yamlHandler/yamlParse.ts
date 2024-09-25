@@ -1,5 +1,5 @@
 import { match } from "assert";
-import { Logger } from "../log";
+import { Logger } from "../../log";
 import { IYamlRangeWithFixSteps } from "./types";
 
 
@@ -20,6 +20,31 @@ function checkAndUpdateIndent(startIndexAcc : startIndexAccType, index : number)
 }
 
 export class YamlParse {
+
+  static getKindAndName(lines: string[]): { kind: string, name: string } {
+    const kind = YamlParse.getKind(lines);
+    const name = YamlParse.getName(lines);
+
+    return { kind, name };
+  }
+
+  public static getKind(lines: string[]): string {
+    const kindLine = lines.find((line: string) => line.includes('kind:'));
+    if (kindLine) {
+      return kindLine.split(':')[1].trim();
+    }
+
+    return '';
+  }
+
+  public static getName(lines: string[]): string {
+    const nameLine = lines.find((line: string) => line.includes('name:'));
+    if (nameLine) {
+      return nameLine.split(':')[1].trim();
+    }
+
+    return '';
+  }
 
   static getRangeFromPathWithFixSteps(path: string, lines: string[], currentLineIndex: number = 0, currentStepIndex: number = 0): IYamlRangeWithFixSteps {
 
