@@ -8,10 +8,10 @@
   },
   "license": "Apache",
   "icon": "images/logo.png",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "publisher": "kubescape",
   "engines": {
-    "vscode": "^1.50.0"
+    "vscode": "^1.92.1"
   },
   "repository": {
     "type": "git",
@@ -30,6 +30,7 @@
   ],
   "activationEvents": [
     "onLanguage:yaml",
+    "onLanguage:dockerfile",
     "onCommand:kubescape.doctor"
   ],
   "main": "./out/extension.js",
@@ -38,6 +39,10 @@
       {
         "command": "kubescape.scanYaml",
         "title": "Kubescape: Scan YAML"
+      },
+      {
+        "command": "kubescape.showPanel",
+        "title": "Show Kubescape Panel"
       }
     ],
     "configuration": {
@@ -90,7 +95,25 @@
           "description": "Kubescape version tier"
         }
       }
-    }
+    },
+    "viewsContainers": {
+			"panel": [
+				{
+					"id": "kubescape",
+					"title": "Kubescape",
+					"icon": "images/logo.png"
+				}
+			]
+		},
+		"views": {
+			"kubescape": [
+				{
+					"type": "webview",
+					"id": "kubescape.KubescapePanel",
+					"name": "Kubescape"
+				}
+			]
+		}
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -121,7 +144,7 @@
     "vsce": "^2.14.0"
   },
   "dependencies": {
-    "@kubescape/install": "^0.4.2",
+    "@kubescape/install": "^0.4.4",
     "abort-controller": "^3.0.0",
     "jsdom": "^19.0.0",
     "node-fetch": "^2.6.0"

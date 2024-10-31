@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as jsdom from 'jsdom';
 import fetch from 'node-fetch';
 
-import * as scan from './scan';
+import * as scan from './scan/workloadScan/workloadscan';
 
 import { Logger } from '../utils/log';
 
@@ -17,8 +17,9 @@ export async function scanYaml() {
         Logger.error("Not an YAML configuration file");
         return;
     }
+    const lines = currentFile.document.getText().split(new RegExp(/\n/));
 
-    scan.kubescapeScanYaml(currentFile.document, true);
+    scan.kubescapeScanYaml(currentFile.document, true, lines);
 }
 
 export async function viewCtrlDoc(params: any[]) {
