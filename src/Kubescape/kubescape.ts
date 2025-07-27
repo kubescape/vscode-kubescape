@@ -24,7 +24,7 @@ export async function scanYaml() {
 
 export async function viewCtrlDoc(params: any[]) {
 
-    const url = `https://hub.armosec.io/docs/${params.toString().replaceAll('.', '-').toLowerCase()}`;
+    const url = `https://kubescape.io/docs/controls/${params.toString().replaceAll('.', '-').toLowerCase()}`;
 
 
     fetch(url).then(async res => {
