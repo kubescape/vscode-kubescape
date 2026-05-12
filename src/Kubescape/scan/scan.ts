@@ -44,7 +44,7 @@ export async function kubescapeScanDocument(document: vscode.TextDocument, displ
 
     }catch(err: any){
         Logger.error(err.message, true);
-        // Update panel with Error message. Some error occured while scanning
+        // Update panel with Error message. Some error occurred while scanning
         
     } finally {
         Logger.info('------------------------------------------------_Scan Completed_------------------------------------------------');
