@@ -1,6 +1,6 @@
 # Kubescape
 
-The [Visual studio extension](https://www.armosec.io/blog/securing-ci-cd-pipelines-security-gates/?utm_source=github&utm_medium=repository) lets utilize the power 💪 of [Kubescape](https://github.com/kubescape/kubescape) directly in your favorite text editor.
+The [Visual studio extension](https://www.armosec.io/blog/securing-ci-cd-pipelines-security-gates/?utm_source=github&utm_medium=repository) lets you utilize the power 💪 of [Kubescape](https://github.com/kubescape/kubescape) directly in your favorite text editor.
 
 ## ✨ Features
 
@@ -11,7 +11,7 @@ You can access any of this extension's commands by opening the Command Palette (
 
 The default behavior also scans YAML files on save 💾.
 
-Scanning results are marked and can be found in `vscode` 'PROBLEMS' tab. Some inofrmation can be viewed when hovering over marked positions.
+Scanning results are marked and can be found in `vscode` 'PROBLEMS' tab. Some information can be viewed when hovering over marked positions.
 
 ![yaml-demo](./images/yaml-demo.gif)
 
@@ -26,11 +26,11 @@ Currently the following options can be configured:
 
 ### Set custom directory for Kubescape
 
-By default, this extension uses it's own Kubescape binary in order to provide
+By default, this extension uses its own Kubescape binary in order to provide
 as stable an experience as it can.
 
 If, however, you desire to use a different or maybe a custom Kubescape executable
-you can use the option `Dir Path` whith a custom directory on your system.
+you can use the option `Dir Path` with a custom directory on your system.
 
 ### Scan triggers
 
@@ -47,7 +47,7 @@ Default : scan on save for all supported files.
 [Frameworks](https://www.armosec.io/blog/kubernetes-security-frameworks-and-guidance/?utm_source=github&utm_medium=repository) are collections of controls.
 There are some built-in controls that Kubescape can use by default and can be
 downloaded locally for an offline scan.
-The Kubescape extension for VS code uses this method to increase it's scanning
+The Kubescape extension for VS code uses this method to increase its scanning
 speed.
 
 #### Choosing required frameworks
@@ -72,7 +72,7 @@ Default: Not set. Uses the Kubescape binary directory.
 To specify which frameworks to use for scanning you can list them in the
 `Scan Frameworks` configuration.
 
-The specified frameworks will be used for the scan. If they dont exist, they will
+The specified frameworks will be used for the scan. If they don't exist, they will
 be downloaded automatically.
 
 Default: Not set. Uses frameworks from the framework directory.
