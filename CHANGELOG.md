@@ -28,7 +28,7 @@ Major changes!
 - Override framework dir and allow custom frameworks
 - Download framework, offline scanning
 - Introduce version tiers
-- fix: Don't run scanning when there is no real file in the system.
+- Fix: Don't run scanning when there is no real file in the system.
 
 ## [0.0.10]
 - Redownload logic fixes
@@ -38,7 +38,7 @@ Major changes!
 
 ## [0.0.8]
 - Add kubescape version validation
-  Kubescape version are now being checked
+  Kubescape version is now being checked
   The version tier could be 'stable' or 'latest' (configurable)
   Doctor will report installed version as well
 
@@ -63,7 +63,7 @@ Major changes!
 - Fix for windows machines
 
 ## [0.0.3]
-- Scan when new yaml files are being open.
+- Scan when new YAML files are being opened.
 - Use warnings instead of errors.
   Sometimes errors on yaml files can cause build problems for projects. It is better to use warnings instead.
 - Kubescape logo update
@@ -79,4 +79,4 @@ Major changes!
 ## [0.0.1]
 
 - Initial version
-- Scaning yaml files using nsa framework
+- Scanning YAML files using NSA framework

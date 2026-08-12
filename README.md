@@ -1,6 +1,6 @@
 # Kubescape
 
-The [Visual studio extension](https://www.armosec.io/blog/securing-ci-cd-pipelines-security-gates/?utm_source=github&utm_medium=repository) lets you utilize the power 💪 of [Kubescape](https://github.com/kubescape/kubescape) directly in your favorite text editor.
+The [Visual Studio extension](https://www.armosec.io/blog/securing-ci-cd-pipelines-security-gates/?utm_source=github&utm_medium=repository) lets you utilize the power 💪 of [Kubescape](https://github.com/kubescape/kubescape) directly in your favorite text editor.
 
 ## ✨ Features
 
@@ -52,11 +52,11 @@ speed.
 
 #### Choosing required frameworks
 
-You can choose which frameworks used by adding their names into the
+You can choose which frameworks to use by adding their names into the
 `Required Frameworks` configuration. This list only ensures that the frameworks
 in it will be downloaded. It does not mark them for scanning usage.
 
-Default : Empty. Meaning all available frameworks will be downloaded.
+Default : Empty. This means all available frameworks will be downloaded.
 
 #### Overriding the framework directory
 
@@ -81,7 +81,7 @@ Default: Not set. Uses frameworks from the framework directory.
 
 By default, I use a version of Kubescape that works well with this extension.
 
-If, however, you wish to use the latest and greatest it can be configured via
+If you wish to use the latest version, you can configure it via
 the `Version Tier` option by setting it to 'latest'
 
 ![kubescape-config](./images/kubescape-config.png)
