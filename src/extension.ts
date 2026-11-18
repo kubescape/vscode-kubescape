@@ -1,143 +1,135 @@
 import * as vscode from 'vscode';
-import { IKubescapeConfig, KubescapeApi } from '@kubescape/install';
-import * as kubescape from './Kubescape/kubescape';
-import * as contextHelper from './utils/context';
-import { KubescapeConfig } from './Kubescape/config/config';
-import { Logger } from './utils/log';
-import { VscodeUi } from './utils/ui';
-import {
-	ERROR_KUBESCAPE_NOT_INSTALLED
-} from './Kubescape/globals';
-import { DiagnosticReportsCollection } from './Kubescape/diagnostics/diagnosticsReportCollection';
-import { kubescapeScanDocument } from './Kubescape/scan/scan';
-import { KubescapeCodeActionProvider } from './Kubescape/codeActions/codeActions';
-import { KubescapePanelWebviewProvider } from './ui/kubescapePanel/kubescapePanel';
+import { findKubescapeExecutable, DiscoveryError } from './server/discovery';
+import { KubescapeLanguageClientManager } from './server/client';
 
-// this method is called when your extension is activated
-// your extension is activated the very first time the command is executed
-export async function activate(context: vscode.ExtensionContext) {
+let clientManager: KubescapeLanguageClientManager | null = null;
+let outputChannel: vscode.OutputChannel | null = null;
 
-	const provider = KubescapePanelWebviewProvider.getInstance(context.extensionUri);
+/**
+ * Resolves the configured or discovered Kubescape executable path.
+ */
+export async function getResolvedExecutable(): Promise<string> {
+    const config = vscode.workspace.getConfiguration('kubescape');
+    const configuredPath = config.get<string>('executablePath') || config.get<string>('dirPath') || null;
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
-	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider(KubescapePanelWebviewProvider.viewType, provider));
-		
-	contextHelper.setExtensionContext(context);
-
-	let subscriptions = context.subscriptions;
-
-	// Subscribe all the exported functions in kubescape.ts
-	for (let exportedFunc of Object.keys(kubescape)){
-		let fullFuncName = `kubescape.${exportedFunc}`;
-		subscriptions.push(vscode.commands.registerCommand(fullFuncName, (args) => eval(`${fullFuncName}(args)`)));
-	}
-
-	subscriptions.push(
-		vscode.languages.registerCodeActionsProvider('yaml', new KubescapeCodeActionProvider, {
-			providedCodeActionKinds: KubescapeCodeActionProvider.providedCodeActionKinds
-		})
-	);
-	subscriptions.push(
-		vscode.languages.registerCodeActionsProvider('dockerfile', new KubescapeCodeActionProvider, {
-			providedCodeActionKinds: KubescapeCodeActionProvider.providedCodeActionKinds
-		})
-	);
-
-	const kubescapeApi = KubescapeApi.instance;
-	await initializeExtension(kubescapeApi);
-
-
-	if (!kubescapeApi.isInstalled) {
-		Logger.error(ERROR_KUBESCAPE_NOT_INSTALLED);
-		throw new Error;
-	}
-
-	/* Update kubescape panel on document change */
-	updatePanelOnChangeDocument(context);
-
-	/* Auto scan on save */
-	addOnSaveTextDocument(context);
-
-	/* Scan on new file open */
-	addOnOpenTextDocument(context);
-
-	/* Remove diagnostics on file close */
-	vscode.workspace.onDidCloseTextDocument(doc => {
-		DiagnosticReportsCollection.instance.removeFileDiagnostics(doc.fileName);
-	});
-
-	/* First scan of current file */
-	if (vscode.window.activeTextEditor) {
-		const doc = vscode.window.activeTextEditor.document;
-		kubescapeScanDocument(doc);
-	}
-
-	Logger.info("Kubescape is active");
-}
-
-// this method is called when your extension is deactivated
-export function deactivate() {
-	contextHelper.setExtensionContext(undefined);
-	Logger.info("Kubescape deactivated");
-}
-
-function addOnSaveTextDocument(context : vscode.ExtensionContext) {
-	vscode.workspace.onDidSaveTextDocument((document) => {
-		if (document.languageId !== 'yaml'  && document.languageId !== 'dockerfile') {
-			return;
-		}
-
-		if (KubescapeConfig.instance.scanOnSave) {
-			if (vscode.window.visibleTextEditors.some((e) => e.document.fileName === document.fileName)) {
-				kubescapeScanDocument(document);
-			}
-		}
-	}, null, context.subscriptions);
-}
-
-function addOnOpenTextDocument(context : vscode.ExtensionContext) {
-	vscode.workspace.onDidOpenTextDocument((document) => {
-		if (document.languageId !== 'yaml' && document.languageId !== 'dockerfile') {
-			return;
-		}
-
-		kubescapeScanDocument(document);
-	}, null, context.subscriptions);
-}
-
-function updatePanelOnChangeDocument(context : vscode.ExtensionContext) {
-	vscode.window.onDidChangeActiveTextEditor((editor) => {
-		Logger.debug(`Active editor changed to ${JSON.stringify(editor)}`);
-		Logger.debug(editor?.document.fileName? `Active editor file name is ${editor.document.fileName}` : "No active editor file name");
-		if (!editor || editor.document.languageId !== 'yaml' && editor.document.languageId !== 'dockerfile') {
-			KubescapePanelWebviewProvider._resetHTMlContent();
-			return;
-		}
-		else{
-			Logger.debug(`Updat HTML content with scan results`)
-			KubescapePanelWebviewProvider.updateHTMLContentWithDiagnostic(DiagnosticReportsCollection.instance.get(editor.document.fileName));
-		}
-	}, null, context.subscriptions);
-}
-
-async function initializeExtension(kubescapeApi : KubescapeApi) {
-    const config = KubescapeConfig.instance;
-
-	await kubescapeApi.setup(new VscodeUi, new class implements IKubescapeConfig {
-        get version() : string {
-            return config.kubescapeVersion;
-        }
-        get frameworksDirectory() : string | undefined {
-            return config.customFrameworkDirectory;
-        }
-        get baseDirectory(): string {
-            return config.kubescapeDir;
-        }
-        get requiredFrameworks(): string[] | undefined {
-            return config.requiredFrameworks;
-        }
-        get scanFrameworks(): string[] | undefined {
-            return config.scanFrameworks;
-        }
+    return await findKubescapeExecutable({
+        configuredPath,
+        workspaceRoot: workspaceFolder,
     });
+}
+
+/**
+ * Activates the Kubescape VS Code extension.
+ */
+export async function activate(context: vscode.ExtensionContext): Promise<KubescapeLanguageClientManager> {
+    outputChannel = vscode.window.createOutputChannel('Kubescape');
+    context.subscriptions.push(outputChannel);
+
+    outputChannel.appendLine('[Extension] Activating Kubescape extension...');
+
+    clientManager = new KubescapeLanguageClientManager(outputChannel);
+    context.subscriptions.push(clientManager);
+
+    // Register user commands
+    context.subscriptions.push(
+        vscode.commands.registerCommand('kubescape.restartServer', async () => {
+            outputChannel?.appendLine('[Command] Manual restart requested.');
+            try {
+                const exePath = await getResolvedExecutable();
+                await clientManager?.restart(exePath);
+                vscode.window.showInformationMessage('Kubescape Language Server restarted.');
+            } catch (err: any) {
+                const msg = err?.message || String(err);
+                outputChannel?.appendLine(`[Error] Restart failed: ${msg}`);
+                vscode.window.showErrorMessage(`Failed to restart Kubescape Language Server: ${msg}`);
+            }
+        }),
+        vscode.commands.registerCommand('kubescape.showOutput', () => {
+            outputChannel?.show();
+        }),
+        vscode.commands.registerCommand('kubescape.scanYaml', async () => {
+            const activeEditor = vscode.window.activeTextEditor;
+            if (activeEditor) {
+                outputChannel?.appendLine(`[Command] Saving active document to trigger scan: ${activeEditor.document.fileName}`);
+                await activeEditor.document.save();
+            } else {
+                vscode.window.showInformationMessage('No active document to scan. Open a Kubernetes YAML manifest and save it.');
+            }
+        })
+    );
+
+    // Watch for dynamic workspace folder changes
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeWorkspaceFolders(async (event) => {
+            if (event.added.length === 0 && event.removed.length === 0) {
+                return;
+            }
+            outputChannel?.appendLine(
+                `[Workspace] Workspace folders changed (+${event.added.length}, -${event.removed.length}). Restarting language server...`
+            );
+            try {
+                const exePath = await getResolvedExecutable();
+                await clientManager?.restart(exePath);
+            } catch (err: any) {
+                const msg = err?.message || String(err);
+                outputChannel?.appendLine(`[Workspace Error] Failed to restart server on workspace folder change: ${msg}`);
+                if (err instanceof DiscoveryError) {
+                    vscode.window.showWarningMessage(`Kubescape LSP: ${err.message}`);
+                }
+            }
+        })
+    );
+
+    // Watch for configuration changes
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration(async (event) => {
+            if (
+                event.affectsConfiguration('kubescape.executablePath') ||
+                event.affectsConfiguration('kubescape.dirPath')
+            ) {
+                outputChannel?.appendLine('[Config] Executable path configuration changed.');
+                try {
+                    const newPath = await getResolvedExecutable();
+                    await clientManager?.restart(newPath);
+                } catch (err: any) {
+                    outputChannel?.appendLine(`[Config Error] Failed to restart server: ${err?.message || err}`);
+                    if (err instanceof DiscoveryError) {
+                        vscode.window.showWarningMessage(`Kubescape LSP: ${err.message}`);
+                    }
+                }
+            }
+        })
+    );
+
+    // Start language server
+    try {
+        const exePath = await getResolvedExecutable();
+        await clientManager.start(exePath);
+    } catch (err: any) {
+        outputChannel.appendLine(`[Startup Error] ${err?.message || err}`);
+        if (err instanceof DiscoveryError) {
+            vscode.window
+                .showWarningMessage(`Kubescape LSP: ${err.message}`, 'Open Settings')
+                .then((choice) => {
+                    if (choice === 'Open Settings') {
+                        vscode.commands.executeCommand('workbench.action.openSettings', 'kubescape.executablePath');
+                    }
+                });
+        }
+    }
+
+    outputChannel.appendLine('[Extension] Kubescape extension activated.');
+    return clientManager;
+}
+
+/**
+ * Deactivates the Kubescape VS Code extension.
+ */
+export async function deactivate(): Promise<void> {
+    if (clientManager) {
+        outputChannel?.appendLine('[Extension] Deactivating Kubescape extension...');
+        await clientManager.stop();
+        clientManager = null;
+    }
 }

@@ -2,6 +2,27 @@
 
 All notable changes to the "kubescape" extension will be documented in this file.
 
+## [0.4.0]
+
+Major architectural update: Integrated Kubescape's built-in Language Server Protocol (LSP).
+
+- **Built-in Language Server Protocol (`kubescape lsp`)**: Replaced legacy external CLI process invocations and ad-hoc background downloads with the standard VS Code Language Client (`vscode-languageclient/node`).
+- **Save-Triggered Security Scanning**: Kubescape automatically scans Kubernetes YAML and JSON manifests on save and publishes security diagnostics directly into the VS Code Problems panel.
+- **Enhanced Configuration & Lifecycle**:
+  - Added `kubescape.executablePath` for user-configured binary locations.
+  - Added `kubescape.trace.server` for debugging LSP communications.
+  - Deprecated legacy `kubescape.dirPath` and `kubescape.scanOnSave` (save-triggered scanning is built into the language server).
+  - Serialized language client lifecycle queue (`start`, `stop`, `restart`) to eliminate concurrency race conditions.
+  - Added dynamic workspace folder change listener to automatically resynchronize roots on workspace changes.
+  - Added quoted Windows PATH normalization.
+  - Removed mandatory `vscode.yaml` dependency in favor of optional recommendation.
+  - Pruned obsolete Activity Bar webview panel and dead legacy code in favor of native VS Code Problems panel diagnostics.
+- **New Commands**:
+  - `Kubescape: Restart Language Server`
+  - `Kubescape: Show Language Server Output`
+  - `Kubescape: Scan YAML`
+- **Robust Process & Discovery Management**: Platform-aware discovery (Windows/macOS/Linux), path validation, permission verification, and graceful crash recovery.
+
 ## [0.3.3]
 
 - Updated @kubescape/install version (v0.4.2) - fixes a bug where control structure has changed in regolibrary, causing a failure in scan report parsing. 

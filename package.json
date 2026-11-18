@@ -26,33 +26,62 @@
   "keywords": [
     "container",
     "kubernetes",
-    "kubescape"
+    "kubescape",
+    "security",
+    "lsp"
   ],
   "activationEvents": [
     "onLanguage:yaml",
-    "onLanguage:dockerfile",
-    "onCommand:kubescape.doctor"
+    "onLanguage:json",
+    "onCommand:kubescape.restartServer",
+    "onCommand:kubescape.showOutput",
+    "onCommand:kubescape.scanYaml"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "kubescape.scanYaml",
-        "title": "Kubescape: Scan YAML"
+        "command": "kubescape.restartServer",
+        "title": "Kubescape: Restart Language Server"
       },
       {
-        "command": "kubescape.showPanel",
-        "title": "Show Kubescape Panel"
+        "command": "kubescape.showOutput",
+        "title": "Kubescape: Show Language Server Output"
+      },
+      {
+        "command": "kubescape.scanYaml",
+        "title": "Kubescape: Scan YAML"
       }
     ],
     "configuration": {
       "type": "object",
       "title": "Kubescape",
       "properties": {
-        "kubescape.dirPath": {
-          "type": "string",
+        "kubescape.executablePath": {
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
-          "description": "Custom path to a kubescape binary to use instead"
+          "description": "Path to the Kubescape CLI executable (defaults to resolving 'kubescape' from system PATH)"
+        },
+        "kubescape.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces communication between VS Code and the Kubescape Language Server"
+        },
+        "kubescape.dirPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Legacy directory path for Kubescape executable (deprecated: use 'kubescape.executablePath' instead)"
         },
         "kubescape.scanOnSave": {
           "type": "string",
@@ -62,58 +91,11 @@
             "none"
           ],
           "default": "all",
-          "description": "Run analysis of kubescape when a document is being saved"
-        },
-        "kubescape.requiredFrameworks": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": null,
-          "description": "Required frameworks (will be downloaded if necessary)"
-        },
-        "kubescape.customFrameworksDir": {
-          "type": "string",
-          "default": null,
-          "description": "Directories with custom frameworks to use"
-        },
-        "kubescape.scanFrameworks": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "default": "all",
-          "description": "Which frameworks to use for scanning"
-        },
-        "kubescape.versionTier": {
-          "type": "string",
-          "enum": [
-            "stable",
-            "latest"
-          ],
-          "default": "stable",
-          "description": "Kubescape version tier"
+          "description": "Legacy setting: Kubescape Language Server automatically scans Kubernetes manifests when saved. This setting has no effect on the language server.",
+          "deprecationMessage": "Automatic save-triggered scanning is built into the Kubescape Language Server. This setting is deprecated and has no effect."
         }
       }
-    },
-    "viewsContainers": {
-			"panel": [
-				{
-					"id": "kubescape",
-					"title": "Kubescape",
-					"icon": "images/logo.png"
-				}
-			]
-		},
-		"views": {
-			"kubescape": [
-				{
-					"type": "webview",
-					"id": "kubescape.KubescapePanel",
-					"name": "Kubescape"
-				}
-			]
-		}
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
@@ -121,32 +103,27 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "node ./out/test/runTest.js",
+    "test": "mocha --timeout 60000 out/test/suite/**/*.test.js",
+    "test:integration": "node ./out/test/runTest.js",
     "package": "vsce package"
   },
-  "extensionDependencies": [
-    "vscode.yaml"
-  ],
   "devDependencies": {
     "@types/glob": "^8.0.0",
     "@types/jsdom": "^16.2.14",
     "@types/mocha": "^9.0.0",
-    "@types/node": "14.x",
+    "@types/node": "18.x",
     "@types/node-fetch": "^2.5.7",
-    "@types/vscode": "^1.50.0",
+    "@types/vscode": "^1.82.0",
     "@typescript-eslint/eslint-plugin": "^4.31.1",
     "@typescript-eslint/parser": "^4.31.1",
     "@vscode/test-electron": "^1.6.2",
     "eslint": "^7.32.0",
     "glob": "^8.0.3",
     "mocha": "^10.1.0",
-    "typescript": "^4.4.3",
+    "typescript": "^4.9.5",
     "vsce": "^2.14.0"
   },
   "dependencies": {
-    "@kubescape/install": "^0.4.4",
-    "abort-controller": "^3.0.0",
-    "jsdom": "^19.0.0",
-    "node-fetch": "^2.6.0"
+    "vscode-languageclient": "^9.0.1"
   }
 }
