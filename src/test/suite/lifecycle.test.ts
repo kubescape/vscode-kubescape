@@ -5,6 +5,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { LifecycleController, ILifecycleClient } from '../../server/queue';
+import {
+    isProcessAlive,
+    waitForProcessExit,
+    terminateProcess
+} from '../../server/process';
 
 function encodeFrame(msg: any): Buffer {
     const json = JSON.stringify(msg);
@@ -12,8 +17,10 @@ function encodeFrame(msg: any): Buffer {
     return Buffer.from(`Content-Length: ${len}\r\n\r\n${json}`, 'utf8');
 }
 
+const activeTestClients: Set<LspTestClient> = new Set();
+
 class LspTestClient {
-    private proc: cp.ChildProcess;
+    public readonly proc: cp.ChildProcess;
     private buffer: Buffer = Buffer.alloc(0);
     private messageQueue: any[] = [];
     private waiters: Array<(msg: any) => void> = [];
@@ -22,6 +29,11 @@ class LspTestClient {
         this.proc = cp.spawn(process.execPath, [mockServerScript], {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, ...env },
+        });
+
+        activeTestClients.add(this);
+        this.proc.on('exit', () => {
+            activeTestClients.delete(this);
         });
 
         this.proc.stdout?.on('data', (chunk: Buffer) => {
@@ -102,6 +114,23 @@ class LspTestClient {
         return this.proc.exitCode === null && !this.proc.killed;
     }
 
+    public async terminate(timeoutMs: number = 3000): Promise<void> {
+        activeTestClients.delete(this);
+        if (!this.proc.pid || this.proc.exitCode !== null) {
+            return;
+        }
+
+        try {
+            this.proc.stdin?.destroy();
+            this.proc.stdout?.destroy();
+            this.proc.stderr?.destroy();
+        } catch {
+            // Ignored
+        }
+
+        await terminateProcess(this.proc, timeoutMs);
+    }
+
     public kill(): void {
         if (this.isAlive()) {
             this.proc.kill('SIGKILL');
@@ -124,6 +153,16 @@ describe('LSP Lifecycle & Protocol Tests', () => {
     });
 
     afterEach(async () => {
+        // Finding 10: Clean up every active mock child process
+        for (const client of activeTestClients) {
+            try {
+                await client.terminate(2000);
+            } catch {
+                // Ignored
+            }
+        }
+        activeTestClients.clear();
+
         try {
             await fs.promises.rm(tmpDir, { recursive: true, force: true });
         } catch {
@@ -228,6 +267,7 @@ describe('LSP Lifecycle & Protocol Tests', () => {
 
     it('receives diagnostics notification upon didSave when server is in diagnostic mode', async () => {
         const client = new LspTestClient(mockServerPath, {
+            MOCK_LSP_RECORD_FILE: recordFile,
             MOCK_LSP_PUBLISH_DIAGNOSTICS: '1',
         });
 
@@ -235,24 +275,35 @@ describe('LSP Lifecycle & Protocol Tests', () => {
             jsonrpc: '2.0',
             id: 1,
             method: 'initialize',
-            params: { processId: null, rootUri: 'file:///workspace', capabilities: {} },
+            params: { processId: process.pid, rootUri: 'file:///workspace', capabilities: {} },
         });
         await client.nextMessage();
+
         client.send({ jsonrpc: '2.0', method: 'initialized', params: {} });
+
+        const docUri = 'file:///workspace/misconfigured-pod.yaml';
+        client.send({
+            jsonrpc: '2.0',
+            method: 'textDocument/didOpen',
+            params: { textDocument: { uri: docUri, languageId: 'yaml', version: 1, text: 'kind: Pod\n' } },
+        });
 
         client.send({
             jsonrpc: '2.0',
             method: 'textDocument/didSave',
-            params: { textDocument: { uri: 'file:///workspace/pod.yaml' } },
+            params: { textDocument: { uri: docUri } },
         });
 
         const diagMsg = await client.nextMessage();
         assert.strictEqual(diagMsg.method, 'textDocument/publishDiagnostics');
-        assert.strictEqual(diagMsg.params?.uri, 'file:///workspace/pod.yaml');
-        assert.strictEqual(diagMsg.params?.diagnostics?.length, 3);
-        assert.strictEqual(diagMsg.params.diagnostics[0].code, 'C-0017');
+        assert.strictEqual(diagMsg.params?.uri, docUri);
+        assert.ok(Array.isArray(diagMsg.params?.diagnostics));
+        assert.strictEqual(diagMsg.params.diagnostics.length, 3);
 
-        client.kill();
+        client.send({ jsonrpc: '2.0', id: 2, method: 'shutdown' });
+        await client.nextMessage();
+        client.send({ jsonrpc: '2.0', method: 'exit' });
+        await client.waitForExit();
     });
 
     it('handles unexpected process exit cleanly without hanging', async () => {
@@ -264,7 +315,7 @@ describe('LSP Lifecycle & Protocol Tests', () => {
             jsonrpc: '2.0',
             id: 1,
             method: 'initialize',
-            params: { processId: null, rootUri: null, capabilities: {} },
+            params: { processId: process.pid, capabilities: {} },
         });
 
         const exitCode = await client.waitForExit();
@@ -273,27 +324,215 @@ describe('LSP Lifecycle & Protocol Tests', () => {
 
     it('terminates child process cleanly on kill without leaving orphaned zombies', async () => {
         const client = new LspTestClient(mockServerPath);
+        assert.strictEqual(client.isAlive(), true);
+
         const pid = client.getPid();
-        assert.ok(pid);
+        assert.ok(pid && pid > 0);
 
         client.kill();
         await client.waitForExit();
 
-        // Verify process is gone
-        let isRunning = false;
+        assert.strictEqual(client.isAlive(), false);
+        assert.strictEqual(await isProcessAlive(pid), false);
+    });
+
+    it('ensures teardown terminates lingering mock process when a test fails before cleanup (Finding 10)', async () => {
+        const client = new LspTestClient(mockServerPath);
+        assert.strictEqual(client.isAlive(), true);
+        const pid = client.getPid()!;
+
+        // Simulate afterEach teardown cleanup
+        await client.terminate(3000);
+
+        assert.strictEqual(client.isAlive(), false);
+        assert.strictEqual(await isProcessAlive(pid), false, 'Mock child process must be reaped by teardown');
+    });
+});
+
+describe('LifecycleController Lifecycle & Safeguards (Findings 4, 6, 7)', function () {
+    this.timeout(10000);
+    let mockServerPath: string;
+
+    before(() => {
+        mockServerPath = path.resolve(__dirname, '../mockLspServer.js');
+    });
+
+    it('prevents restart from launching a replacement server after disposal (Finding 4)', async () => {
+        let stopDeferredResolve: () => void;
+        const stopDeferred = new Promise<void>((r) => { stopDeferredResolve = r; });
+        let replacementStarted = false;
+
+        const mockClient = {
+            state: 3, // Running
+            start: async () => {},
+            stop: async () => {
+                await stopDeferred;
+            },
+            dispose: async () => {},
+        };
+
+        const clientManager = new LifecycleController<any>(
+            () => mockClient,
+            { initTimeoutMs: 5000 }
+        );
+
+        // Start
+        await clientManager.start('/bin/kubescape');
+
+        // Swap factory for restart check
+        (clientManager as any).clientFactory = () => {
+            replacementStarted = true;
+            return mockClient;
+        };
+
+        // Trigger restart (which calls internalStop)
+        const restartPromise = clientManager.restart('/bin/kubescape-v2');
+
+        // Allow microtasks to run so restart enters internalStop and awaits stopDeferred
+        await new Promise(r => setTimeout(r, 10));
+
+        // While restart is awaiting stop, call dispose()
+        clientManager.dispose();
+        assert.strictEqual(clientManager.getIsDisposed(), true);
+
+        // Now resolve stop
+        stopDeferredResolve!();
+        await restartPromise.catch(() => {});
+
+        // Replacement must NOT have started after disposal
+        assert.strictEqual(replacementStarted, false, 'Replacement server must not start after disposal');
+        assert.strictEqual(clientManager.getClient(), null);
+    });
+
+    it('ensures repeated dispose calls are safe and idempotent (Finding 4)', async () => {
+        const clientManager = new LifecycleController<any>(() => ({
+            state: 1,
+            start: async () => {},
+            stop: async () => {},
+            dispose: async () => {},
+        }));
+        assert.doesNotThrow(() => {
+            clientManager.dispose();
+            clientManager.dispose();
+            clientManager.dispose();
+        });
+        assert.strictEqual(clientManager.getIsDisposed(), true);
+
+        await assert.rejects(
+            () => clientManager.start('/bin/kubescape'),
+            /disposed/i
+        );
+    });
+
+    it('terminates stalled process on initialization timeout and unblocks queue (Finding 6)', async () => {
+        let spawnedProc: cp.ChildProcess | null = null;
+
+        const clientManager = new LifecycleController<any>(
+            () => {
+                const proc = cp.spawn(process.execPath, [mockServerPath], {
+                    stdio: ['pipe', 'pipe', 'pipe'],
+                    env: { ...process.env, MOCK_LSP_HANG_ON_INIT: '1' },
+                });
+                spawnedProc = proc;
+
+                return {
+                    state: 2, // Starting
+                    _serverProcess: proc,
+                    start: () => new Promise<never>(() => {}), // Stalls indefinitely
+                    stop: async () => {},
+                    dispose: async () => {},
+                };
+            },
+            { initTimeoutMs: 300 }
+        );
+
+        // Start must reject with initialization timeout
+        await assert.rejects(
+            () => clientManager.start('/bin/kubescape'),
+            (err: any) => {
+                assert.ok(err.message.includes('initialization timed out'));
+                return true;
+            }
+        );
+
+        // Child process must be dead
+        assert.ok(spawnedProc);
+        const exited = await waitForProcessExit(spawnedProc, 2000);
+        assert.strictEqual(exited, true, 'Stalled child process must be terminated on timeout');
+
+        // Queue must be unblocked and ready for subsequent restart
+        let healthyStarted = false;
+        (clientManager as any).clientFactory = () => {
+            return {
+                state: 3, // Running
+                start: async () => { healthyStarted = true; },
+                stop: async () => {},
+                dispose: async () => {},
+            };
+        };
+
+        await clientManager.restart('/bin/kubescape-healthy');
+        assert.strictEqual(healthyStarted, true, 'Subsequent restart must succeed after timeout');
+        await clientManager.stop();
+    });
+
+    it('rejects replacement when old process cannot be terminated on shutdown (Finding 7)', async () => {
+        let replacementStarted = false;
+        const stubbornProc: any = {
+            pid: 999999, // dummy pid that won't die
+            exitCode: null,
+            kill: () => {},
+            once: () => {},
+            removeListener: () => {},
+        };
+
+        const clientManager = new LifecycleController<any>(
+            () => {
+                return {
+                    state: 3,
+                    start: async () => { replacementStarted = true; },
+                    stop: async () => { throw new Error('Stop rejected'); },
+                    dispose: async () => {},
+                };
+            },
+            { stopTimeoutMs: 50 }
+        );
+
+        // Inject simulated running client with alive process
+        (clientManager as any).client = {
+            state: 3,
+            _serverProcess: stubbornProc,
+            stop: async () => { throw new Error('Stop failed'); },
+            dispose: async () => {},
+        };
+        (clientManager as any).currentProcess = stubbornProc;
+        (clientManager as any).currentExecutablePath = '/bin/kubescape-old';
+
+        const origKill = process.kill;
         try {
-            process.kill(pid!, 0);
-            isRunning = true;
-        } catch {
-            isRunning = false;
+            (process as any).kill = (pid: number, signal?: any) => {
+                if (pid === 999999) {
+                    return true;
+                }
+                return origKill(pid, signal);
+            };
+
+            // Restart must fail and NOT start replacement
+            await assert.rejects(
+                () => clientManager.restart('/bin/kubescape-new'),
+                /Failed to terminate Kubescape Language Server process/
+            );
+        } finally {
+            process.kill = origKill;
         }
-        assert.strictEqual(isRunning, false);
+
+        assert.strictEqual(replacementStarted, false, 'Must not start replacement while old process is alive');
     });
 });
 
 describe('Language Client Lifecycle Controller & Queue Tests', () => {
     class MockLanguageClient implements ILifecycleClient {
-        public state: number = 1; // 1 = Stopped, 2 = Starting, 3 = Running
+        public state: number = 1; // 1: Stopped, 2: Starting, 3: Running
         public startCallCount: number = 0;
         public stopCallCount: number = 0;
         public disposeCallCount: number = 0;

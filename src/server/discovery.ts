@@ -11,7 +11,7 @@ export interface DiscoveryOptions {
 export class DiscoveryError extends Error {
     constructor(
         message: string,
-        public readonly code: 'NOT_FOUND' | 'NOT_A_FILE' | 'NOT_EXECUTABLE' | 'INVALID_PATH'
+        public readonly code: 'NOT_FOUND' | 'NOT_A_FILE' | 'NOT_EXECUTABLE' | 'INVALID_PATH' | 'UNSUPPORTED_SCRIPT'
     ) {
         super(message);
         this.name = 'DiscoveryError';
@@ -20,10 +20,12 @@ export class DiscoveryError extends Error {
 
 /**
  * Returns candidate binary names for the target platform.
+ * Note: On Windows, only native executables are supported. Batch scripts (.cmd, .bat)
+ * are rejected to prevent shell-invocation security issues in vscode-languageclient.
  */
 export function getExecutableNames(platform: string = process.platform): string[] {
     if (platform === 'win32') {
-        return ['kubescape.exe', 'kubescape.cmd', 'kubescape.bat', 'kubescape'];
+        return ['kubescape.exe', 'kubescape'];
     }
     return ['kubescape'];
 }
@@ -40,7 +42,10 @@ export async function isExecutable(filePath: string, platform: string = process.
 
         if (platform === 'win32') {
             const ext = path.extname(filePath).toLowerCase();
-            return ext === '.exe' || ext === '.cmd' || ext === '.bat' || ext === '';
+            if (ext === '.cmd' || ext === '.bat') {
+                return false;
+            }
+            return ext === '.exe' || ext === '';
         }
 
         // On POSIX, check execute permission bits
@@ -68,16 +73,30 @@ export function normalizePathDir(dir: string): string {
  * Resolves the path to the Kubescape executable according to the following precedence:
  * 1. Explicit configured path (settings)
  * 2. System PATH lookup
+ *
+ * Always returns the absolute path that passed the executable verification check.
  */
 export async function findKubescapeExecutable(options: DiscoveryOptions = {}): Promise<string> {
     const platform = options.platform ?? process.platform;
     const configured = options.configuredPath?.trim();
+    const baseDir = options.workspaceRoot || process.cwd();
 
     // 1. Explicit configured path
     if (configured) {
         let candidatePath = configured;
-        if (!path.isAbsolute(candidatePath) && options.workspaceRoot) {
-            candidatePath = path.resolve(options.workspaceRoot, candidatePath);
+        if (!path.isAbsolute(candidatePath)) {
+            candidatePath = path.resolve(baseDir, candidatePath);
+        }
+
+        // Reject Windows batch scripts (.cmd, .bat) with an actionable error
+        if (platform === 'win32') {
+            const ext = path.extname(candidatePath).toLowerCase();
+            if (ext === '.cmd' || ext === '.bat') {
+                throw new DiscoveryError(
+                    `Windows batch scripts (.cmd, .bat) cannot be launched securely by the language client. Please use the native "kubescape.exe" binary instead: "${configured}"`,
+                    'UNSUPPORTED_SCRIPT'
+                );
+            }
         }
 
         let stat: fs.Stats;
@@ -106,7 +125,7 @@ export async function findKubescapeExecutable(options: DiscoveryOptions = {}): P
             // If user pointed to a directory (e.g. legacy dirPath), check for binary inside
             const names = getExecutableNames(platform);
             for (const name of names) {
-                const subPath = path.join(candidatePath, name);
+                const subPath = path.resolve(candidatePath, name);
                 if (await isExecutable(subPath, platform)) {
                     return subPath;
                 }
@@ -138,8 +157,10 @@ export async function findKubescapeExecutable(options: DiscoveryOptions = {}): P
     const exeNames = getExecutableNames(platform);
 
     for (const dir of dirs) {
+        // Resolve relative PATH entries to absolute paths against base directory
+        const absDir = path.isAbsolute(dir) ? dir : path.resolve(baseDir, dir);
         for (const exeName of exeNames) {
-            const fullPath = path.join(dir, exeName);
+            const fullPath = path.resolve(absDir, exeName);
             if (await isExecutable(fullPath, platform)) {
                 return fullPath;
             }

@@ -81,6 +81,11 @@ function handleMessage(msg: any): void {
             process.exit(2);
         }
 
+        if (process.env.MOCK_LSP_HANG_ON_INIT === '1') {
+            log('Hanging on initialize request (never responding)');
+            return;
+        }
+
         send({
             jsonrpc: '2.0',
             id: msg.id,
@@ -186,6 +191,10 @@ function handleMessage(msg: any): void {
     }
 
     if (msg.method === 'shutdown') {
+        if (process.env.MOCK_LSP_IGNORE_SHUTDOWN === '1') {
+            log('Ignoring shutdown request');
+            return;
+        }
         isShuttingDown = true;
         send({
             jsonrpc: '2.0',

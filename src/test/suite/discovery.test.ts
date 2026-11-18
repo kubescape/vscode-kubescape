@@ -12,6 +12,8 @@ import {
 
 describe('Executable Discovery Tests', () => {
     let tmpDir: string;
+    const hostPlatform = process.platform;
+    const hostExeName = hostPlatform === 'win32' ? 'kubescape.exe' : 'kubescape';
 
     beforeEach(async () => {
         tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ks-test-disc-'));
@@ -28,7 +30,9 @@ describe('Executable Discovery Tests', () => {
     it('returns platform-appropriate executable candidate names', () => {
         const winNames = getExecutableNames('win32');
         assert.ok(winNames.includes('kubescape.exe'));
-        assert.ok(winNames.includes('kubescape.cmd'));
+        assert.ok(winNames.includes('kubescape'));
+        assert.ok(!winNames.includes('kubescape.cmd'), 'Windows batch .cmd must not be candidate');
+        assert.ok(!winNames.includes('kubescape.bat'), 'Windows batch .bat must not be candidate');
 
         const linuxNames = getExecutableNames('linux');
         assert.deepStrictEqual(linuxNames, ['kubescape']);
@@ -37,136 +41,221 @@ describe('Executable Discovery Tests', () => {
         assert.deepStrictEqual(macNames, ['kubescape']);
     });
 
-    it('discovers binary when present on PATH', async () => {
-        const binPath = path.join(tmpDir, 'kubescape');
-        await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    describe('Windows batch script rejection (Finding 5)', () => {
+        it('rejects configured .cmd batch script on Windows with UNSUPPORTED_SCRIPT', async () => {
+            const cmdPath = path.join(tmpDir, 'kubescape.cmd');
+            await fs.promises.writeFile(cmdPath, '@echo off\r\n');
 
-        const resolved = await findKubescapeExecutable({
-            pathEnv: tmpDir,
-            platform: 'linux',
+            await assert.rejects(
+                async () => {
+                    await findKubescapeExecutable({
+                        configuredPath: cmdPath,
+                        platform: 'win32',
+                    });
+                },
+                (err: any) => {
+                    assert.ok(err instanceof DiscoveryError);
+                    assert.strictEqual(err.code, 'UNSUPPORTED_SCRIPT');
+                    assert.ok(err.message.includes('Windows batch scripts'));
+                    assert.ok(err.message.includes('kubescape.exe'));
+                    return true;
+                }
+            );
         });
-        assert.strictEqual(resolved, binPath);
+
+        it('rejects configured .bat batch script on Windows with UNSUPPORTED_SCRIPT', async () => {
+            const batPath = path.join(tmpDir, 'kubescape.bat');
+            await fs.promises.writeFile(batPath, '@echo off\r\n');
+
+            await assert.rejects(
+                async () => {
+                    await findKubescapeExecutable({
+                        configuredPath: batPath,
+                        platform: 'win32',
+                    });
+                },
+                (err: any) => {
+                    assert.ok(err instanceof DiscoveryError);
+                    assert.strictEqual(err.code, 'UNSUPPORTED_SCRIPT');
+                    assert.ok(err.message.includes('Windows batch scripts'));
+                    return true;
+                }
+            );
+        });
+
+        it('isExecutable rejects .cmd and .bat on Windows while accepting .exe', async () => {
+            const cmdPath = path.join(tmpDir, 'test.cmd');
+            const batPath = path.join(tmpDir, 'test.bat');
+            const exePath = path.join(tmpDir, 'test.exe');
+
+            await fs.promises.writeFile(cmdPath, '@echo off');
+            await fs.promises.writeFile(batPath, '@echo off');
+            await fs.promises.writeFile(exePath, 'binary content');
+
+            assert.strictEqual(await isExecutable(cmdPath, 'win32'), false);
+            assert.strictEqual(await isExecutable(batPath, 'win32'), false);
+            assert.strictEqual(await isExecutable(exePath, 'win32'), true);
+        });
     });
 
-    it('resolves configured custom absolute executable path', async () => {
-        const binPath = path.join(tmpDir, 'custom-kubescape');
-        await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    describe('Cross-platform and host-safe filesystem discovery (Finding 8 & 9)', () => {
+        it('discovers binary when present on PATH using host platform conventions', async () => {
+            const binPath = path.join(tmpDir, hostExeName);
+            await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
-        const resolved = await findKubescapeExecutable({
-            configuredPath: binPath,
-            platform: 'darwin',
+            const resolved = await findKubescapeExecutable({
+                pathEnv: tmpDir,
+                platform: hostPlatform,
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved), 'Returned path must be absolute');
         });
-        assert.strictEqual(resolved, binPath);
+
+        it('resolves configured custom absolute executable path', async () => {
+            const binPath = path.join(tmpDir, hostExeName);
+            await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+            const resolved = await findKubescapeExecutable({
+                configuredPath: binPath,
+                platform: hostPlatform,
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
+        });
+
+        it('resolves custom relative path against workspace root and returns absolute path', async () => {
+            const binPath = path.join(tmpDir, 'bin', hostExeName);
+            await fs.promises.mkdir(path.dirname(binPath), { recursive: true });
+            await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+            const relativeConfig = `./bin/${hostExeName}`;
+            const resolved = await findKubescapeExecutable({
+                configuredPath: relativeConfig,
+                workspaceRoot: tmpDir,
+                platform: hostPlatform,
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved), 'Resolved relative path must be absolute');
+        });
+
+        it('resolves relative PATH entry against workspace root to absolute path', async () => {
+            const relDirName = 'local-tools';
+            const absDir = path.join(tmpDir, relDirName);
+            await fs.promises.mkdir(absDir, { recursive: true });
+            const binPath = path.join(absDir, hostExeName);
+            await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+            const resolved = await findKubescapeExecutable({
+                pathEnv: relDirName,
+                workspaceRoot: tmpDir,
+                platform: hostPlatform,
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
+        });
+
+        it('handles paths containing spaces correctly', async () => {
+            const dirWithSpaces = path.join(tmpDir, 'My Tools and Binaries');
+            await fs.promises.mkdir(dirWithSpaces, { recursive: true });
+            const binPath = path.join(dirWithSpaces, hostExeName);
+            await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+            const resolved = await findKubescapeExecutable({
+                configuredPath: binPath,
+                platform: hostPlatform,
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
+        });
+
+        it('resolves binary inside directory when user configures legacy dirPath directory', async () => {
+            const binPath = path.join(tmpDir, hostExeName);
+            await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+
+            const resolved = await findKubescapeExecutable({
+                configuredPath: tmpDir,
+                platform: hostPlatform,
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
+        });
+
+        it('resolves Windows .exe extension automatically if omitted in settings', async () => {
+            const binPath = path.join(tmpDir, 'kubescape.exe');
+            await fs.promises.writeFile(binPath, 'dummy exe binary');
+
+            const resolved = await findKubescapeExecutable({
+                configuredPath: path.join(tmpDir, 'kubescape'),
+                platform: 'win32',
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
+        });
     });
 
-    it('resolves custom relative path against workspace root', async () => {
-        const binPath = path.join(tmpDir, 'bin', 'kubescape');
-        await fs.promises.mkdir(path.dirname(binPath), { recursive: true });
-        await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-
-        const resolved = await findKubescapeExecutable({
-            configuredPath: './bin/kubescape',
-            workspaceRoot: tmpDir,
-            platform: 'darwin',
+    describe('Error handling', () => {
+        it('rejects configured path when file does not exist', async () => {
+            const nonExistent = path.join(tmpDir, 'does-not-exist');
+            await assert.rejects(
+                async () => {
+                    await findKubescapeExecutable({ configuredPath: nonExistent });
+                },
+                (err: any) => {
+                    assert.ok(err instanceof DiscoveryError);
+                    assert.strictEqual(err.code, 'NOT_FOUND');
+                    assert.ok(err.message.includes('does not exist'));
+                    return true;
+                }
+            );
         });
-        assert.strictEqual(resolved, binPath);
-    });
 
-    it('handles paths containing spaces correctly', async () => {
-        const dirWithSpaces = path.join(tmpDir, 'My Tools and Binaries');
-        await fs.promises.mkdir(dirWithSpaces, { recursive: true });
-        const binPath = path.join(dirWithSpaces, 'kubescape');
-        await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-
-        const resolved = await findKubescapeExecutable({
-            configuredPath: binPath,
-            platform: 'darwin',
-        });
-        assert.strictEqual(resolved, binPath);
-    });
-
-    it('resolves Windows .exe extension automatically if omitted in settings', async () => {
-        const binPath = path.join(tmpDir, 'kubescape.exe');
-        await fs.promises.writeFile(binPath, 'dummy exe binary');
-
-        const resolved = await findKubescapeExecutable({
-            configuredPath: path.join(tmpDir, 'kubescape'),
-            platform: 'win32',
-        });
-        assert.strictEqual(resolved, binPath);
-    });
-
-    it('resolves binary inside directory when user configures legacy dirPath directory', async () => {
-        const binPath = path.join(tmpDir, 'kubescape');
-        await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-
-        const resolved = await findKubescapeExecutable({
-            configuredPath: tmpDir,
-            platform: 'linux',
-        });
-        assert.strictEqual(resolved, binPath);
-    });
-
-    it('rejects configured path when file does not exist', async () => {
-        const nonExistent = path.join(tmpDir, 'does-not-exist');
-        await assert.rejects(
-            async () => {
-                await findKubescapeExecutable({ configuredPath: nonExistent });
-            },
-            (err: any) => {
-                assert.ok(err instanceof DiscoveryError);
-                assert.strictEqual(err.code, 'NOT_FOUND');
-                assert.ok(err.message.includes('does not exist'));
-                return true;
+        it('rejects configured file if it lacks executable permissions on POSIX', async () => {
+            if (process.platform === 'win32') {
+                return;
             }
-        );
-    });
 
-    it('rejects configured file if it lacks executable permissions on POSIX', async () => {
-        if (process.platform === 'win32') {
-            return;
-        }
+            const binPath = path.join(tmpDir, 'kubescape-no-exec');
+            // Mode 0o644 -> not executable
+            await fs.promises.writeFile(binPath, 'text content', { mode: 0o644 });
 
-        const binPath = path.join(tmpDir, 'kubescape-no-exec');
-        // Mode 0o644 -> not executable
-        await fs.promises.writeFile(binPath, 'text content', { mode: 0o644 });
+            await assert.rejects(
+                async () => {
+                    await findKubescapeExecutable({
+                        configuredPath: binPath,
+                        platform: 'darwin',
+                    });
+                },
+                (err: any) => {
+                    assert.ok(err instanceof DiscoveryError);
+                    assert.strictEqual(err.code, 'NOT_EXECUTABLE');
+                    assert.ok(err.message.includes('not executable'));
+                    return true;
+                }
+            );
+        });
 
-        await assert.rejects(
-            async () => {
-                await findKubescapeExecutable({
-                    configuredPath: binPath,
-                    platform: 'darwin',
-                });
-            },
-            (err: any) => {
-                assert.ok(err instanceof DiscoveryError);
-                assert.strictEqual(err.code, 'NOT_EXECUTABLE');
-                assert.ok(err.message.includes('not executable'));
-                return true;
-            }
-        );
-    });
+        it('throws clear error when executable is not found on PATH and not configured', async () => {
+            await assert.rejects(
+                async () => {
+                    await findKubescapeExecutable({
+                        pathEnv: tmpDir, // empty dir
+                        configuredPath: undefined,
+                        platform: hostPlatform,
+                    });
+                },
+                (err: any) => {
+                    assert.ok(err instanceof DiscoveryError);
+                    assert.strictEqual(err.code, 'NOT_FOUND');
+                    assert.ok(err.message.includes('not found on PATH'));
+                    return true;
+                }
+            );
+        });
 
-    it('throws clear error when executable is not found on PATH and not configured', async () => {
-        await assert.rejects(
-            async () => {
-                await findKubescapeExecutable({
-                    pathEnv: tmpDir, // empty dir
-                    configuredPath: undefined,
-                });
-            },
-            (err: any) => {
-                assert.ok(err instanceof DiscoveryError);
-                assert.strictEqual(err.code, 'NOT_FOUND');
-                assert.ok(err.message.includes('not found on PATH'));
-                return true;
-            }
-        );
-    });
-
-    it('isExecutable returns false for directory', async () => {
-        const isExe = await isExecutable(tmpDir);
-        assert.strictEqual(isExe, false);
+        it('isExecutable returns false for directory', async () => {
+            const isExe = await isExecutable(tmpDir);
+            assert.strictEqual(isExe, false);
+        });
     });
 
     describe('PATH normalization and quoted entries', () => {
@@ -211,19 +300,21 @@ describe('Executable Discovery Tests', () => {
                 platform: 'win32',
             });
             assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
         });
 
         it('discovers executable in unquoted PATH entry with spaces', async () => {
             const dirWithSpaces = path.join(tmpDir, 'Unquoted Dir With Spaces');
             await fs.promises.mkdir(dirWithSpaces, { recursive: true });
-            const binPath = path.join(dirWithSpaces, 'kubescape');
+            const binPath = path.join(dirWithSpaces, hostExeName);
             await fs.promises.writeFile(binPath, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
 
             const resolved = await findKubescapeExecutable({
                 pathEnv: dirWithSpaces,
-                platform: 'linux',
+                platform: hostPlatform,
             });
             assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
         });
 
         it('ignores empty entries and handles mixed quoted and unquoted PATH entries', async () => {
@@ -242,6 +333,7 @@ describe('Executable Discovery Tests', () => {
                 platform: 'win32',
             });
             assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
         });
     });
 });

@@ -103,8 +103,8 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile && npm run lint",
     "lint": "eslint src --ext ts",
-    "test": "mocha --timeout 60000 out/test/suite/**/*.test.js",
-    "test:integration": "node ./out/test/runTest.js",
+    "test": "mocha --timeout 60000 \"out/test/suite/**/!(*e2e*).test.js\"",
+    "test:integration": "mocha --timeout 120000 out/test/suite/e2e.test.js",
     "package": "vsce package"
   },
   "devDependencies": {

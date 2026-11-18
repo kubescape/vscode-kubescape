@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import { findKubescapeExecutable, DiscoveryError } from './server/discovery';
 import { KubescapeLanguageClientManager } from './server/client';
+import { ServerLifecycleCoordinator } from './server/coordinator';
 
 let clientManager: KubescapeLanguageClientManager | null = null;
+let coordinator: ServerLifecycleCoordinator | null = null;
 let outputChannel: vscode.OutputChannel | null = null;
 
 /**
@@ -20,6 +22,13 @@ export async function getResolvedExecutable(): Promise<string> {
 }
 
 /**
+ * Returns the current ServerLifecycleCoordinator (useful for tests and inspection).
+ */
+export function getLifecycleCoordinator(): ServerLifecycleCoordinator | null {
+    return coordinator;
+}
+
+/**
  * Activates the Kubescape VS Code extension.
  */
 export async function activate(context: vscode.ExtensionContext): Promise<KubescapeLanguageClientManager> {
@@ -31,13 +40,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
     clientManager = new KubescapeLanguageClientManager(outputChannel);
     context.subscriptions.push(clientManager);
 
+    coordinator = new ServerLifecycleCoordinator(clientManager, outputChannel, getResolvedExecutable);
+    context.subscriptions.push(coordinator);
+
     // Register user commands
     context.subscriptions.push(
         vscode.commands.registerCommand('kubescape.restartServer', async () => {
             outputChannel?.appendLine('[Command] Manual restart requested.');
             try {
-                const exePath = await getResolvedExecutable();
-                await clientManager?.restart(exePath);
+                await coordinator?.triggerRestart('manual');
                 vscode.window.showInformationMessage('Kubescape Language Server restarted.');
             } catch (err: any) {
                 const msg = err?.message || String(err);
@@ -69,8 +80,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
                 `[Workspace] Workspace folders changed (+${event.added.length}, -${event.removed.length}). Restarting language server...`
             );
             try {
-                const exePath = await getResolvedExecutable();
-                await clientManager?.restart(exePath);
+                await coordinator?.triggerRestart('workspace');
             } catch (err: any) {
                 const msg = err?.message || String(err);
                 outputChannel?.appendLine(`[Workspace Error] Failed to restart server on workspace folder change: ${msg}`);
@@ -90,8 +100,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
             ) {
                 outputChannel?.appendLine('[Config] Executable path configuration changed.');
                 try {
-                    const newPath = await getResolvedExecutable();
-                    await clientManager?.restart(newPath);
+                    await coordinator?.triggerRestart('config');
                 } catch (err: any) {
                     outputChannel?.appendLine(`[Config Error] Failed to restart server: ${err?.message || err}`);
                     if (err instanceof DiscoveryError) {
@@ -102,10 +111,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
         })
     );
 
-    // Start language server
+    // Start language server via lifecycle coordinator
     try {
-        const exePath = await getResolvedExecutable();
-        await clientManager.start(exePath);
+        await coordinator.triggerRestart('startup');
     } catch (err: any) {
         outputChannel.appendLine(`[Startup Error] ${err?.message || err}`);
         if (err instanceof DiscoveryError) {
@@ -127,6 +135,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
  * Deactivates the Kubescape VS Code extension.
  */
 export async function deactivate(): Promise<void> {
+    if (coordinator) {
+        coordinator.dispose();
+        coordinator = null;
+    }
     if (clientManager) {
         outputChannel?.appendLine('[Extension] Deactivating Kubescape extension...');
         await clientManager.stop();

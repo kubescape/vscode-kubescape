@@ -12,14 +12,13 @@ function encodeFrame(msg: any): Buffer {
 
 function findKubescapeBinary(): string | undefined {
     if (process.env.KUBESCAPE_BIN_PATH && fs.existsSync(process.env.KUBESCAPE_BIN_PATH)) {
-        return process.env.KUBESCAPE_BIN_PATH;
-    }
-    const localCandidate = '/Users/vanshika/kubescape-bin';
-    if (fs.existsSync(localCandidate)) {
-        return localCandidate;
+        return path.resolve(process.env.KUBESCAPE_BIN_PATH);
     }
     const pathDirs = (process.env.PATH || '').split(path.delimiter);
     for (const d of pathDirs) {
+        if (!d) {
+            continue;
+        }
         const p = path.join(d, process.platform === 'win32' ? 'kubescape.exe' : 'kubescape');
         if (fs.existsSync(p)) {
             return p;
@@ -30,12 +29,34 @@ function findKubescapeBinary(): string | undefined {
 
 describe('Real Kubescape LSP End-to-End Test', function () {
     this.timeout(120000);
-    const binPath = findKubescapeBinary();
+    let binPath: string;
 
-    if (!binPath) {
-        it.skip('Skipping E2E test: no kubescape binary found (set KUBESCAPE_BIN_PATH)', () => {});
-        return;
-    }
+    before(() => {
+        const found = findKubescapeBinary();
+        if (!found) {
+            throw new Error(
+                'Kubescape binary with LSP support not found. ' +
+                'Please install Kubescape with built-in LSP support or set KUBESCAPE_BIN_PATH environment variable to run integration tests.'
+            );
+        }
+
+        // Verify that the binary supports `lsp`
+        try {
+            const check = cp.spawnSync(found, ['lsp', '--help'], { encoding: 'utf8', timeout: 5000 });
+            if (check.status !== 0 && !check.stdout?.includes('lsp') && !check.stderr?.includes('lsp')) {
+                throw new Error(
+                    `Found binary at "${found}", but "${found} lsp --help" exited with status ${check.status}: ${check.stderr || check.stdout}`
+                );
+            }
+        } catch (err: any) {
+            throw new Error(
+                `Found binary at "${found}", but verifying LSP capability failed: ${err.message}. ` +
+                'Ensure the binary has the built-in Language Server command (PR #5064).'
+            );
+        }
+
+        binPath = found;
+    });
 
     let tmpDir: string;
     let proc: cp.ChildProcess;

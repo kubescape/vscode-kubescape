@@ -75,6 +75,38 @@ The Kubescape extension is available at:
 - [Open VSX Registry](https://open-vsx.org/extension/kubescape/kubescape)
 - [Kubescape GitHub Releases](https://github.com/kubescape/kubescape/releases)
 
+## 🛠️ Development & Testing
+
+### Building the Extension
+
+```bash
+npm install
+npm run compile
+```
+
+### Running Tests
+
+- **Unit & Mock LSP Protocol Tests** (runs headless, zero external binary dependency):
+  ```bash
+  npm test
+  ```
+- **Real-Binary End-to-End Integration Tests** (requires a real `kubescape` binary with `lsp` command):
+  ```bash
+  # When kubescape is on PATH:
+  npm run test:integration
+
+  # Or specify the exact binary path:
+  KUBESCAPE_BIN_PATH=/path/to/kubescape npm run test:integration
+  ```
+
+### Packaging
+
+To build the VSIX extension package locally:
+
+```bash
+npx vsce package --allow-star-activation
+```
+
 ## 🗒️ License & Contributing
 
 Licensed under Apache 2.0. Contributions are welcome on GitHub at [kubescape/vscode-kubescape](https://github.com/kubescape/vscode-kubescape).
