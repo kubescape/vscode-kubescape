@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { findKubescapeExecutable, DiscoveryError } from './server/discovery';
 import { KubescapeLanguageClientManager } from './server/client';
 import { ServerLifecycleCoordinator } from './server/coordinator';
+import { saveToTriggerScan } from './scanYaml';
 
 let clientManager: KubescapeLanguageClientManager | null = null;
 let coordinator: ServerLifecycleCoordinator | null = null;
@@ -63,7 +64,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
             const activeEditor = vscode.window.activeTextEditor;
             if (activeEditor) {
                 outputChannel?.appendLine(`[Command] Saving active document to trigger scan: ${activeEditor.document.fileName}`);
-                await activeEditor.document.save();
+                await saveToTriggerScan(activeEditor.document, (command) => vscode.commands.executeCommand(command));
             } else {
                 vscode.window.showInformationMessage('No active document to scan. Open a Kubernetes YAML manifest and save it.');
             }
