@@ -20,12 +20,12 @@ export class DiscoveryError extends Error {
 
 /**
  * Returns candidate binary names for the target platform.
- * Note: On Windows, only native executables are supported. Batch scripts (.cmd, .bat)
+ * Note: On Windows, only native executables (.exe) are supported. Batch scripts (.cmd, .bat)
  * are rejected to prevent shell-invocation security issues in vscode-languageclient.
  */
 export function getExecutableNames(platform: string = process.platform): string[] {
     if (platform === 'win32') {
-        return ['kubescape.exe', 'kubescape'];
+        return ['kubescape.exe'];
     }
     return ['kubescape'];
 }
@@ -45,7 +45,7 @@ export async function isExecutable(filePath: string, platform: string = process.
             if (ext === '.cmd' || ext === '.bat') {
                 return false;
             }
-            return ext === '.exe' || ext === '';
+            return ext === '.exe';
         }
 
         // On POSIX, check execute permission bits
@@ -88,17 +88,6 @@ export async function findKubescapeExecutable(options: DiscoveryOptions = {}): P
             candidatePath = path.resolve(baseDir, candidatePath);
         }
 
-        // Reject Windows batch scripts (.cmd, .bat) with an actionable error
-        if (platform === 'win32') {
-            const ext = path.extname(candidatePath).toLowerCase();
-            if (ext === '.cmd' || ext === '.bat') {
-                throw new DiscoveryError(
-                    `Windows batch scripts (.cmd, .bat) cannot be launched securely by the language client. Please use the native "kubescape.exe" binary instead: "${configured}"`,
-                    'UNSUPPORTED_SCRIPT'
-                );
-            }
-        }
-
         let stat: fs.Stats;
         try {
             stat = await fs.promises.stat(candidatePath);
@@ -122,7 +111,7 @@ export async function findKubescapeExecutable(options: DiscoveryOptions = {}): P
         }
 
         if (!stat.isFile()) {
-            // If user pointed to a directory (e.g. legacy dirPath), check for binary inside
+            // If user pointed to a directory (e.g. legacy dirPath or a folder ending in .cmd), check for binary inside
             const names = getExecutableNames(platform);
             for (const name of names) {
                 const subPath = path.resolve(candidatePath, name);
@@ -134,6 +123,17 @@ export async function findKubescapeExecutable(options: DiscoveryOptions = {}): P
                 `Configured Kubescape path is a directory and contains no executable binary: "${configured}"`,
                 'NOT_A_FILE'
             );
+        }
+
+        // Reject Windows batch scripts (.cmd, .bat) with an actionable error
+        if (platform === 'win32') {
+            const ext = path.extname(candidatePath).toLowerCase();
+            if (ext === '.cmd' || ext === '.bat') {
+                throw new DiscoveryError(
+                    `Windows batch scripts (.cmd, .bat) cannot be launched securely by the language client. Please use the native "kubescape.exe" binary instead: "${configured}"`,
+                    'UNSUPPORTED_SCRIPT'
+                );
+            }
         }
 
         const executable = await isExecutable(candidatePath, platform);

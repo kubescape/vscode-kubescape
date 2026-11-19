@@ -37,6 +37,7 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
                 restartCalls.push(exePath);
                 running = true;
                 currentExe = exePath;
+                return 'restarted' as const;
             },
         };
     });
@@ -113,13 +114,71 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
         const resolver = async () => '/usr/local/bin/kubescape';
         const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
 
-        // Non-manual trigger (e.g. config or workspace)
-        await coordinator.triggerRestart('config');
+        // Non-manual trigger (e.g. config) with unchanged executable
+        const resultConfig = await coordinator.triggerRestart('config');
+        assert.strictEqual(resultConfig, 'unchanged');
         assert.deepStrictEqual(restartCalls, [], 'Should not restart if target executable is already running');
 
         // Manual trigger ALWAYS restarts
-        await coordinator.triggerRestart('manual');
+        const resultManual = await coordinator.triggerRestart('manual');
+        assert.strictEqual(resultManual, 'restarted');
         assert.deepStrictEqual(restartCalls, ['/usr/local/bin/kubescape'], 'Manual trigger must force restart');
+    });
+
+    it('always restarts on workspace reason even if executable is unchanged', async () => {
+        running = true;
+        currentExe = '/usr/local/bin/kubescape';
+
+        const resolver = async () => '/usr/local/bin/kubescape';
+        const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
+
+        const result = await coordinator.triggerRestart('workspace');
+        assert.strictEqual(result, 'restarted');
+        assert.deepStrictEqual(restartCalls, ['/usr/local/bin/kubescape']);
+    });
+
+    it('restarts on config trigger if workspace folders have changed', async () => {
+        running = true;
+        currentExe = '/usr/local/bin/kubescape';
+
+        let folders = ['/workspace/a'];
+        const resolver = async () => '/usr/local/bin/kubescape';
+        const coordinator = new ServerLifecycleCoordinator(
+            mockClientManager,
+            mockOutputChannel,
+            resolver,
+            () => folders
+        );
+
+        // Initial restart syncs folders
+        const initResult = await coordinator.triggerRestart('workspace');
+        assert.strictEqual(initResult, 'restarted');
+        assert.deepStrictEqual(coordinator.getLastAppliedWorkspaceFolders(), ['/workspace/a']);
+        restartCalls = [];
+
+        // Second config trigger with same folders skips restart
+        const skipResult = await coordinator.triggerRestart('config');
+        assert.strictEqual(skipResult, 'unchanged');
+        assert.deepStrictEqual(restartCalls, []);
+
+        // Folders change -> config trigger must now restart!
+        folders = ['/workspace/a', '/workspace/b'];
+        const changeResult = await coordinator.triggerRestart('config');
+        assert.strictEqual(changeResult, 'restarted');
+        assert.deepStrictEqual(restartCalls, ['/usr/local/bin/kubescape']);
+        assert.deepStrictEqual(coordinator.getLastAppliedWorkspaceFolders(), ['/workspace/a', '/workspace/b']);
+    });
+
+    it('returns superseded when restart is superseded by newer generation or disposal', async () => {
+        const deferred = new Deferred<string>();
+        const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, () => deferred.promise);
+
+        const restartPromise = coordinator.triggerRestart('manual');
+        coordinator.dispose();
+        deferred.resolve('/usr/local/bin/kubescape');
+
+        const result = await restartPromise;
+        assert.strictEqual(result, 'superseded');
     });
 
     it('suppresses errors from superseded discovery requests', async () => {
@@ -151,5 +210,55 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
 
         // promiseA must not reject because it was superseded
         await assert.doesNotReject(promiseA);
+    });
+
+    it('does not skip restart when lifecycle work is pending and ensures replacement runs (Finding 3)', async () => {
+        running = true;
+        currentExe = '/usr/local/bin/kubescape';
+
+        const deferredManualStarted = new Deferred<void>();
+        const deferredManualFinish = new Deferred<void>();
+        let restartCallCount = 0;
+
+        mockClientManager = {
+            isRunning: () => running,
+            getCurrentExecutablePath: () => currentExe,
+            restart: async (exePath: string, checkGen?: () => boolean) => {
+                restartCallCount++;
+                if (restartCallCount === 1) {
+                    deferredManualStarted.resolve();
+                    await deferredManualFinish.promise;
+                    if (checkGen && !checkGen()) {
+                        return 'superseded' as const;
+                    }
+                }
+                running = true;
+                currentExe = exePath;
+                return 'restarted' as const;
+            },
+        };
+
+        const resolver = async () => '/usr/local/bin/kubescape';
+        const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
+
+        // 1. A manual replacement begins (generation 1)
+        const promiseManual = coordinator.triggerRestart('manual');
+        await deferredManualStarted.promise;
+
+        // 2. A configuration event arrives with the same executable and unchanged workspace folders (generation 2)
+        const promiseConfig = coordinator.triggerRestart('config');
+
+        // Allow earlier manual restart to finish
+        deferredManualFinish.resolve();
+
+        const [resultManual, resultConfig] = await Promise.all([promiseManual, promiseConfig]);
+
+        // 3. The earlier startup became invalid and returned 'superseded'
+        assert.strictEqual(resultManual, 'superseded', 'Earlier manual startup must report superseded outcome');
+
+        // 4. The newer request must NOT have been skipped as "unchanged"; it must restart and run validly!
+        assert.strictEqual(resultConfig, 'restarted', 'Newer config event must not skip while work is pending and must restart server');
+        assert.strictEqual(mockClientManager.isRunning(), true, 'Server must remain running after replacement');
+        assert.strictEqual(restartCallCount, 2, 'Both restart calls must have executed in client manager');
     });
 });

@@ -2,13 +2,15 @@ import * as cp from 'child_process';
 
 /**
  * Checks whether a given process ID is alive in the operating system.
+ * Returns true if the process exists or if an error (like EPERM) indicates the process exists.
+ * Returns false only when ESRCH confirms the process does not exist.
  */
-export async function isProcessAlive(pid: number): Promise<boolean> {
+export function isProcessAlive(pid: number): boolean {
     try {
         process.kill(pid, 0);
         return true;
-    } catch {
-        return false;
+    } catch (err: any) {
+        return err?.code !== 'ESRCH';
     }
 }
 
@@ -20,7 +22,7 @@ export async function waitForProcessExit(proc: cp.ChildProcess, timeoutMs: numbe
     if (!proc.pid || proc.exitCode !== null) {
         return true;
     }
-    if (!(await isProcessAlive(proc.pid))) {
+    if (!isProcessAlive(proc.pid)) {
         return true;
     }
 

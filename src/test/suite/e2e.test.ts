@@ -43,9 +43,13 @@ describe('Real Kubescape LSP End-to-End Test', function () {
         // Verify that the binary supports `lsp`
         try {
             const check = cp.spawnSync(found, ['lsp', '--help'], { encoding: 'utf8', timeout: 5000 });
-            if (check.status !== 0 && !check.stdout?.includes('lsp') && !check.stderr?.includes('lsp')) {
+            if (
+                check.status !== 0 ||
+                (check.stderr && check.stderr.includes('unknown command')) ||
+                !(check.stdout?.toLowerCase().includes('language server') || check.stdout?.includes('kubescape lsp'))
+            ) {
                 throw new Error(
-                    `Found binary at "${found}", but "${found} lsp --help" exited with status ${check.status}: ${check.stderr || check.stdout}`
+                    `Found binary at "${found}", but "${found} lsp --help" does not support the LSP command (status ${check.status}): ${check.stderr || check.stdout}`
                 );
             }
         } catch (err: any) {
