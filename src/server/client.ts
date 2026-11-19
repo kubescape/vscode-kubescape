@@ -94,7 +94,10 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         if (this.isDisposed) {
             throw new Error('Cannot start Kubescape Language Server: Client manager has been disposed.');
         }
-        return this.queue.enqueue(() => this.internalStart(executablePath));
+        this.shutdownPromise = null;
+        return this.queue.enqueue(async () => {
+            await this.internalStart(executablePath);
+        });
     }
 
     /**
@@ -107,12 +110,21 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         if (this.isDisposed && !this.client && !this.currentProcess) {
             return Promise.resolve();
         }
-        this.shutdownPromise = this.queue
-            .enqueue(() => this.internalStop())
-            .finally(() => {
-                this.shutdownPromise = null;
-            });
-        return this.shutdownPromise;
+        const promise = this.queue.enqueue(() => this.internalStop());
+        this.shutdownPromise = promise;
+        promise.then(
+            () => {
+                if (this.shutdownPromise === promise) {
+                    this.shutdownPromise = null;
+                }
+            },
+            () => {
+                if (this.shutdownPromise === promise) {
+                    this.shutdownPromise = null;
+                }
+            }
+        );
+        return promise;
     }
 
     /**
@@ -125,6 +137,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         if (this.isDisposed) {
             throw new Error('Cannot restart Kubescape Language Server: Client manager has been disposed.');
         }
+        this.shutdownPromise = null;
         return this.queue.enqueue(() => this.internalRestart(executablePath, checkGeneration));
     }
 
@@ -146,22 +159,22 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             return 'superseded';
         }
 
-        await this.internalStart(executablePath, checkGeneration);
-        return 'restarted';
+        const started = await this.internalStart(executablePath, checkGeneration);
+        return started ? 'restarted' : 'superseded';
     }
 
     private async internalStart(
         executablePath: string,
         checkGeneration?: () => boolean
-    ): Promise<void> {
+    ): Promise<boolean> {
         if (this.isDisposed || (checkGeneration && !checkGeneration())) {
             this.outputChannel.appendLine('[LSP] Cannot start: superseded or client manager is disposed.');
-            return;
+            return false;
         }
 
         if (this.isRunning() && this.currentExecutablePath === executablePath) {
             this.outputChannel.appendLine('[LSP] Language client is already running with target executable.');
-            return;
+            return true;
         }
 
         if (this.client || this.currentProcess) {
@@ -171,7 +184,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         // Re-check disposed state after stop
         if (this.isDisposed || (checkGeneration && !checkGeneration())) {
             this.outputChannel.appendLine('[LSP] Cannot start: superseded or client manager was disposed during stop.');
-            return;
+            return false;
         }
 
         this.outputChannel.appendLine(`[LSP] Launching Kubescape Language Server: ${executablePath} lsp`);
@@ -232,10 +245,11 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
                     '[LSP] Client manager was disposed or superseded during startup. Stopping server...'
                 );
                 await this.internalStop();
-                return;
+                return false;
             }
 
             this.outputChannel.appendLine('[LSP] Kubescape Language Server successfully started.');
+            return true;
         } catch (err: any) {
             if (didTimeout || err?.message === 'INITIALIZATION_TIMEOUT') {
                 this.outputChannel.appendLine(
@@ -364,11 +378,31 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         }
         this.isDisposed = true;
         if (this.shutdownPromise) {
-            void this.shutdownPromise.finally(() => {
-                this.queue.dispose();
-            });
+            this.shutdownPromise.then(
+                () => {
+                    try {
+                        this.queue.dispose();
+                    } catch (err: any) {
+                        this.outputChannel.appendLine(`[LSP Error] Error disposing queue: ${err?.message || err}`);
+                    }
+                },
+                (err) => {
+                    try {
+                        this.queue.dispose();
+                    } catch (disposeErr: any) {
+                        this.outputChannel.appendLine(`[LSP Error] Error disposing queue: ${disposeErr?.message || disposeErr}`);
+                    }
+                    this.outputChannel.appendLine(
+                        `[LSP Error] Error during shutdown before disposal: ${err?.message || err}`
+                    );
+                }
+            );
         } else {
-            this.queue.dispose();
+            try {
+                this.queue.dispose();
+            } catch (err: any) {
+                this.outputChannel.appendLine(`[LSP Error] Error disposing queue: ${err?.message || err}`);
+            }
             void this.internalStop().catch((err) => {
                 this.outputChannel.appendLine(`[LSP Error] Error during disposal: ${err?.message || err}`);
             });

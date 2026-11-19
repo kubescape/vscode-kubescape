@@ -864,6 +864,151 @@ describe('Language Client Lifecycle Controller & Queue Tests', () => {
         assert.strictEqual(replacementStarted, true, 'Restart should succeed once previous process exits');
         await controller.stop();
     });
+
+    it('returns superseded when generation is invalidated during client.start (Finding 1)', async () => {
+        let isValidGeneration = true;
+        let stopCalled = false;
+
+        const controller = new LifecycleController<any>(
+            () => {
+                return {
+                    state: 2,
+                    start: async () => {
+                        await new Promise((r) => setTimeout(r, 40));
+                    },
+                    stop: async () => {
+                        stopCalled = true;
+                    },
+                    dispose: async () => {},
+                };
+            },
+            { initTimeoutMs: 5000 }
+        );
+
+        const restartPromise = controller.restart('/bin/kubescape', () => isValidGeneration);
+
+        // Invalidate generation while startup is in-flight
+        setTimeout(() => {
+            isValidGeneration = false;
+        }, 10);
+
+        const result = await restartPromise;
+
+        assert.strictEqual(result, 'superseded', 'Must report superseded when generation is invalidated during start()');
+        assert.strictEqual(stopCalled, true, 'Server must be stopped upon generation invalidation');
+        assert.strictEqual(controller.getClient(), null, 'Client reference must be cleared');
+        assert.strictEqual(controller.isRunning(), false, 'Server must not remain running');
+    });
+
+    it('handles rejected shutdown without unhandled rejection when disposal is pending (Finding 2)', async () => {
+        const stubbornProc: any = {
+            pid: 777777,
+            exitCode: null,
+            kill: () => {},
+            once: () => {},
+            removeListener: () => {},
+        };
+
+        const controller = new LifecycleController<any>(
+            () => {
+                return {
+                    state: 3,
+                    _serverProcess: stubbornProc,
+                    start: async () => {},
+                    stop: async () => {
+                        throw new Error('Stop failed');
+                    },
+                    dispose: async () => {},
+                };
+            },
+            { stopTimeoutMs: 50 }
+        );
+
+        (controller as any).client = {
+            state: 3,
+            _serverProcess: stubbornProc,
+            stop: async () => { throw new Error('Stop failed'); },
+            dispose: async () => {},
+        };
+        (controller as any).currentProcess = stubbornProc;
+        (controller as any).currentExecutablePath = '/bin/kubescape';
+
+        const origKill = process.kill;
+        try {
+            (process as any).kill = (pid: number, signal?: any) => {
+                if (pid === 777777) {
+                    return true;
+                }
+                return origKill(pid, signal);
+            };
+
+            const stopPromise = controller.stop();
+            controller.dispose();
+            assert.strictEqual(controller.getIsDisposed(), true);
+
+            await assert.rejects(
+                stopPromise,
+                /Failed to terminate Kubescape Language Server process/
+            );
+
+            assert.strictEqual((controller as any).queue.isDisposed, true);
+        } finally {
+            process.kill = origKill;
+        }
+    });
+
+    it('preserves stop ordering across intervening starts (Finding 4)', async () => {
+        const stateHistory: string[] = [];
+        let replacementInstance: any = null;
+
+        const controller = new LifecycleController<any>(
+            (exe: string) => {
+                const client = {
+                    state: 1,
+                    start: async () => {
+                        stateHistory.push(`start:${exe}`);
+                        client.state = 3;
+                    },
+                    stop: async () => {
+                        stateHistory.push(`stop:${exe}`);
+                        client.state = 1;
+                    },
+                    dispose: async () => {},
+                };
+                if (exe === '/bin/replacement') {
+                    replacementInstance = client;
+                }
+                return client;
+            }
+        );
+
+        await controller.start('/bin/initial');
+        assert.strictEqual(controller.isRunning(), true);
+
+        // 1. stop() is called
+        const stop1 = controller.stop();
+
+        // 2. start('/bin/replacement') is queued
+        const startPromise = controller.start('/bin/replacement');
+
+        // 3. Another stop() is called before the first stop settles
+        const stop2 = controller.stop();
+
+        assert.notStrictEqual(stop1, stop2, 'Stop after intervening start must enqueue a separate stop operation');
+
+        await Promise.all([stop1, startPromise, stop2]);
+
+        assert.deepStrictEqual(stateHistory, [
+            'start:/bin/initial',
+            'stop:/bin/initial',
+            'start:/bin/replacement',
+            'stop:/bin/replacement',
+        ]);
+
+        assert.strictEqual(controller.isRunning(), false, 'Replacement server must be stopped by the final stop()');
+        assert.strictEqual(controller.getClient(), null);
+        assert.strictEqual(replacementInstance?.state, 1, 'Replacement client state must be stopped (1)');
+    });
 });
 
 describe('Process Alive Probing and Launch Arguments (Findings 1 & 2)', () => {

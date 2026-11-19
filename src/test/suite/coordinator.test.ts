@@ -211,4 +211,54 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
         // promiseA must not reject because it was superseded
         await assert.doesNotReject(promiseA);
     });
+
+    it('does not skip restart when lifecycle work is pending and ensures replacement runs (Finding 3)', async () => {
+        running = true;
+        currentExe = '/usr/local/bin/kubescape';
+
+        const deferredManualStarted = new Deferred<void>();
+        const deferredManualFinish = new Deferred<void>();
+        let restartCallCount = 0;
+
+        mockClientManager = {
+            isRunning: () => running,
+            getCurrentExecutablePath: () => currentExe,
+            restart: async (exePath: string, checkGen?: () => boolean) => {
+                restartCallCount++;
+                if (restartCallCount === 1) {
+                    deferredManualStarted.resolve();
+                    await deferredManualFinish.promise;
+                    if (checkGen && !checkGen()) {
+                        return 'superseded' as const;
+                    }
+                }
+                running = true;
+                currentExe = exePath;
+                return 'restarted' as const;
+            },
+        };
+
+        const resolver = async () => '/usr/local/bin/kubescape';
+        const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
+
+        // 1. A manual replacement begins (generation 1)
+        const promiseManual = coordinator.triggerRestart('manual');
+        await deferredManualStarted.promise;
+
+        // 2. A configuration event arrives with the same executable and unchanged workspace folders (generation 2)
+        const promiseConfig = coordinator.triggerRestart('config');
+
+        // Allow earlier manual restart to finish
+        deferredManualFinish.resolve();
+
+        const [resultManual, resultConfig] = await Promise.all([promiseManual, promiseConfig]);
+
+        // 3. The earlier startup became invalid and returned 'superseded'
+        assert.strictEqual(resultManual, 'superseded', 'Earlier manual startup must report superseded outcome');
+
+        // 4. The newer request must NOT have been skipped as "unchanged"; it must restart and run validly!
+        assert.strictEqual(resultConfig, 'restarted', 'Newer config event must not skip while work is pending and must restart server');
+        assert.strictEqual(mockClientManager.isRunning(), true, 'Server must remain running after replacement');
+        assert.strictEqual(restartCallCount, 2, 'Both restart calls must have executed in client manager');
+    });
 });

@@ -153,7 +153,10 @@ export class LifecycleController<TClient extends ILifecycleClient> {
         if (this.isDisposed) {
             throw new Error('Cannot start language client: Controller has been disposed.');
         }
-        return this.queue.enqueue(() => this.internalStart(executablePath, checkGeneration));
+        this.shutdownPromise = null;
+        return this.queue.enqueue(async () => {
+            await this.internalStart(executablePath, checkGeneration);
+        });
     }
 
     public stop(): Promise<void> {
@@ -163,12 +166,21 @@ export class LifecycleController<TClient extends ILifecycleClient> {
         if (this.isDisposed && !this.client && !this.currentProcess) {
             return Promise.resolve();
         }
-        this.shutdownPromise = this.queue
-            .enqueue(() => this.internalStop())
-            .finally(() => {
-                this.shutdownPromise = null;
-            });
-        return this.shutdownPromise;
+        const promise = this.queue.enqueue(() => this.internalStop());
+        this.shutdownPromise = promise;
+        promise.then(
+            () => {
+                if (this.shutdownPromise === promise) {
+                    this.shutdownPromise = null;
+                }
+            },
+            () => {
+                if (this.shutdownPromise === promise) {
+                    this.shutdownPromise = null;
+                }
+            }
+        );
+        return promise;
     }
 
     public async restart(
@@ -178,6 +190,7 @@ export class LifecycleController<TClient extends ILifecycleClient> {
         if (this.isDisposed) {
             throw new Error('Cannot restart language client: Controller has been disposed.');
         }
+        this.shutdownPromise = null;
         return this.queue.enqueue(() => this.internalRestart(executablePath, checkGeneration));
     }
 
@@ -199,22 +212,22 @@ export class LifecycleController<TClient extends ILifecycleClient> {
             return 'superseded';
         }
 
-        await this.internalStart(executablePath, checkGeneration);
-        return 'restarted';
+        const started = await this.internalStart(executablePath, checkGeneration);
+        return started ? 'restarted' : 'superseded';
     }
 
     private async internalStart(
         executablePath: string,
         checkGeneration?: () => boolean
-    ): Promise<void> {
+    ): Promise<boolean> {
         if (this.isDisposed || (checkGeneration && !checkGeneration())) {
             this.log('[LSP] Cannot start: superseded or controller is disposed.');
-            return;
+            return false;
         }
 
         if (this.isRunning() && this.currentExecutablePath === executablePath) {
             this.log('[LSP] Client is already running with target executable.');
-            return;
+            return true;
         }
 
         if (this.client || this.currentProcess) {
@@ -224,7 +237,7 @@ export class LifecycleController<TClient extends ILifecycleClient> {
         // Re-check disposed state after stop
         if (this.isDisposed || (checkGeneration && !checkGeneration())) {
             this.log('[LSP] Cannot start: superseded or controller was disposed during stop.');
-            return;
+            return false;
         }
 
         this.log(`[LSP] Starting client for: ${executablePath}`);
@@ -253,10 +266,11 @@ export class LifecycleController<TClient extends ILifecycleClient> {
             if (this.isDisposed || (checkGeneration && !checkGeneration())) {
                 this.log('[LSP] Controller was disposed or superseded during startup. Stopping...');
                 await this.internalStop();
-                return;
+                return false;
             }
 
             this.log('[LSP] Client successfully started.');
+            return true;
         } catch (err: any) {
             if (didTimeout || err?.message === 'INITIALIZATION_TIMEOUT') {
                 this.log(
@@ -385,11 +399,29 @@ export class LifecycleController<TClient extends ILifecycleClient> {
         }
         this.isDisposed = true;
         if (this.shutdownPromise) {
-            void this.shutdownPromise.finally(() => {
-                this.queue.dispose();
-            });
+            this.shutdownPromise.then(
+                () => {
+                    try {
+                        this.queue.dispose();
+                    } catch (err: any) {
+                        this.log(`[LSP Error] Error disposing queue: ${err?.message || err}`);
+                    }
+                },
+                (err) => {
+                    try {
+                        this.queue.dispose();
+                    } catch (disposeErr: any) {
+                        this.log(`[LSP Error] Error disposing queue: ${disposeErr?.message || disposeErr}`);
+                    }
+                    this.log(`[LSP Error] Error during shutdown before disposal: ${err?.message || err}`);
+                }
+            );
         } else {
-            this.queue.dispose();
+            try {
+                this.queue.dispose();
+            } catch (err: any) {
+                this.log(`[LSP Error] Error disposing queue: ${err?.message || err}`);
+            }
             void this.internalStop().catch((err) => {
                 this.log(`[LSP Error] Error during disposal: ${err?.message || err}`);
             });
