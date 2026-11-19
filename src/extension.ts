@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { findKubescapeExecutable, DiscoveryError } from './server/discovery';
+import { configuredExecutablePath } from './server/configuredPath';
 import { KubescapeLanguageClientManager } from './server/client';
 import { ServerLifecycleCoordinator } from './server/coordinator';
 
@@ -12,7 +13,7 @@ let outputChannel: vscode.OutputChannel | null = null;
  */
 export async function getResolvedExecutable(): Promise<string> {
     const config = vscode.workspace.getConfiguration('kubescape');
-    const configuredPath = config.get<string>('executablePath') || config.get<string>('dirPath') || null;
+    const configuredPath = configuredExecutablePath(config.get<string>('executablePath'), config.get<string>('dirPath'));
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
 
     return await findKubescapeExecutable({
