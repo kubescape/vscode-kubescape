@@ -1,99 +1,112 @@
-# Kubescape
+# Kubescape VS Code Extension
 
-The [Visual Studio extension](https://www.armosec.io/blog/securing-ci-cd-pipelines-security-gates/?utm_source=github&utm_medium=repository) lets you utilize the power 💪 of [Kubescape](https://github.com/kubescape/kubescape) directly in your favorite text editor.
+The official [Visual Studio Code extension](https://marketplace.visualstudio.com/items?itemName=kubescape.kubescape) brings [Kubescape](https://github.com/kubescape/kubescape) security scanning directly to your editor using Kubescape's built-in **Language Server Protocol (LSP)**.
+
+As you write and save Kubernetes manifests, Kubescape analyzes them locally and surfaces misconfigurations and compliance violations directly in VS Code's **Problems** panel.
 
 ## ✨ Features
 
-### Scan YAML files and get analysis from Kubescape
-
-YAML files can be scanned using a command.
-You can access any of this extension's commands by opening the Command Palette (Ctrl+Shift+P on Linux/Windows and Cmd+Shift+P on Mac), and then typing in the command name.
-
-The default behavior also scans YAML files on save 💾.
-
-Scanning results are marked and can be found in `vscode` 'PROBLEMS' tab. Some information can be viewed when hovering over marked positions.
-
-![yaml-demo](./images/yaml-demo.gif)
+- **Built-in Language Server Protocol Integration**: Communicates directly with `kubescape lsp` using standard LSP over standard input/output.
+- **Save-Triggered Local Scanning**: Automatically scans Kubernetes manifests when saved, catching misconfigurations without modifying remote clusters or sending source code out of your machine.
+- **Native VS Code Diagnostics**: Security findings appear in the Problems panel with full control codes (e.g., `C-0017`), clear descriptions, severity levels, and precise source file ranges.
+- **Multiple Manifest Formats**: Supports Kubernetes YAML (`.yaml`, `.yml`) and JSON (`.json`) manifests, including multi-document YAML files.
+- **Workspace-Aware Discovery**: Discovers `kubescape` on your system `PATH` or uses a user-configured binary location.
 
 ## 🔒 Requirements
 
-This extension downloads the latest Kubescape version.
-However, it is recommended to have Kubescape installed in your path.
+This extension requires the **Kubescape CLI** (v3.0.0 or higher with `kubescape lsp` support) installed on your system.
+
+### Installing Kubescape
+
+Follow the official instructions to install Kubescape:
+
+- **macOS / Linux (Homebrew)**:
+  ```bash
+  brew install kubescape
+  ```
+- **Windows (Scoop / Winget)**:
+  ```bash
+  winget install kubescape
+  ```
+- **Shell script**:
+  ```bash
+  curl -s https://raw.githubusercontent.com/kubescape/kubescape/master/install.sh | /bin/bash
+  ```
+
+If Kubescape is not on your system `PATH`, you can configure its exact location using the `kubescape.executablePath` setting.
 
 ## ⚙️ Configuration
 
-Currently the following options can be configured:
+The extension can be configured via VS Code Settings (`Cmd+,` on macOS, `Ctrl+,` on Windows/Linux):
 
-### Set custom directory for Kubescape
+| Setting | Type | Default | Description |
+|---|---|---|---|
+| `kubescape.executablePath` | `string \| null` | `null` | Absolute path or workspace-relative path to the `kubescape` executable. When `null`, the extension discovers `kubescape` on your system `PATH`. |
+| `kubescape.trace.server` | `string` | `"off"` | Traces communication between VS Code and the Kubescape Language Server (`"off"`, `"messages"`, or `"verbose"`). Logs appear in the "Kubescape Language Server" Output channel. |
+| `kubescape.dirPath` | `string \| null` | `null` | *(Deprecated)* Legacy directory path for the Kubescape binary. Prefer `kubescape.executablePath`. |
+| `kubescape.scanOnSave` | `string` | `"all"` | *(Deprecated)* Automatic save scanning is built into the Language Server; this legacy setting has no effect on the language server. |
 
-By default, this extension uses its own Kubescape binary in order to provide
-as stable an experience as it can.
+### Optional Recommended Extensions
 
-If, however, you desire to use a different or maybe a custom Kubescape executable
-you can use the option `Dir Path` with a custom directory on your system.
+- **[YAML by Red Hat](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml)** (`redhat.vscode-yaml`): Provides Kubernetes schema validation and autocompletion alongside Kubescape's security diagnostics.
 
-### Scan triggers
+## 🕹️ Commands
 
-For the time being, Kubescape scans can take a while, so it might be unwise to run scans
-without a good reason (like a dirty file).
-I chose to run a background scan only when a new file is saved on the disk.
+Access these commands from the VS Code Command Palette (`Cmd+Shift+P` / `Ctrl+Shift+P`):
 
-To choose between available files to scan on save use the option `Scan On Save`.
+- **`Kubescape: Restart Language Server`**: Restarts the active `kubescape lsp` process and re-synchronizes the workspace.
+- **`Kubescape: Show Language Server Output`**: Opens the dedicated Output channel displaying server logs and LSP traffic.
+- **`Kubescape: Scan YAML`**: Saves the active manifest and triggers a scan.
 
-Default : scan on save for all supported files.
+## 📖 Supported Manifests
 
-### Frameworks
+Kubescape LSP inspects Kubernetes manifests containing valid `apiVersion` and `kind` declarations:
+- Single-document YAML manifests
+- Multi-document YAML manifests separated by `---`
+- JSON Kubernetes manifests
+- Nested manifests in subdirectories within the workspace
 
-[Frameworks](https://www.armosec.io/blog/kubernetes-security-frameworks-and-guidance/?utm_source=github&utm_medium=repository) are collections of controls.
-There are some built-in controls that Kubescape can use by default and can be
-downloaded locally for an offline scan.
-The Kubescape extension for VS code uses this method to increase its scanning
-speed.
-
-#### Choosing required frameworks
-
-You can choose which frameworks to use by adding their names into the
-`Required Frameworks` configuration. This list only ensures that the frameworks
-in it will be downloaded. It does not mark them for scanning usage.
-
-Default : Empty. This means all available frameworks will be downloaded.
-
-#### Overriding the framework directory
-
-The used frameworks are downloaded to the Kubescape directory by default.
-You can simply copy / download any desired framework to this directory.
-Alternatively, you can use the `Custom Frameworks Dir` configuration to choose a
-different directory for frameworks.
-
-Default: Not set. Uses the Kubescape binary directory.
-
-#### Specify frameworks for scanning
-
-To specify which frameworks to use for scanning you can list them in the
-`Scan Frameworks` configuration.
-
-The specified frameworks will be used for the scan. If they don't exist, they will
-be downloaded automatically.
-
-Default: Not set. Uses frameworks from the framework directory.
-
-### Kubescape Version
-
-By default, I use a version of Kubescape that works well with this extension.
-
-If you wish to use the latest version, you can configure it via
-the `Version Tier` option by setting it to 'latest'
-
-![kubescape-config](./images/kubescape-config.png)
+Text files that are unsaved or non-Kubernetes YAML files are ignored by the scanner to keep scanning fast and avoid false positives.
 
 ## 💼 Marketplace
 
-This extension is available officially at either:
-
-- [Microsoft VScode Extensions Marketplace](https://marketplace.visualstudio.com/items?itemName=kubescape.kubescape)
+The Kubescape extension is available at:
+- [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=kubescape.kubescape)
 - [Open VSX Registry](https://open-vsx.org/extension/kubescape/kubescape)
-- [Kubescape Github Releases](https://github.com/kubescape/kubescape/releases)
+- [Kubescape GitHub Releases](https://github.com/kubescape/kubescape/releases)
 
-## 🗒️ Release Notes
+## 🛠️ Development & Testing
 
-See [Change Log](./CHANGELOG.md)
+### Building the Extension
+
+```bash
+npm install
+npm run compile
+```
+
+### Running Tests
+
+- **Unit & Mock LSP Protocol Tests** (runs headless, zero external binary dependency):
+  ```bash
+  npm test
+  ```
+- **Real-Binary End-to-End Integration Tests** (requires a real `kubescape` binary with `lsp` command):
+  ```bash
+  # When kubescape is on PATH:
+  npm run test:integration
+
+  # Or specify the exact binary path:
+  KUBESCAPE_BIN_PATH=/path/to/kubescape npm run test:integration
+  ```
+
+### Packaging
+
+To build the VSIX extension package locally:
+
+```bash
+npx vsce package --allow-star-activation
+```
+
+## 🗒️ License & Contributing
+
+Licensed under Apache 2.0. Contributions are welcome on GitHub at [kubescape/vscode-kubescape](https://github.com/kubescape/vscode-kubescape).
