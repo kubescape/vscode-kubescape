@@ -4,6 +4,7 @@ import { configuredExecutablePath } from './server/configuredPath';
 import { KubescapeLanguageClientManager } from './server/client';
 import { ServerLifecycleCoordinator } from './server/coordinator';
 import { saveToTriggerScan } from './scanYaml';
+import { forceScanForDocument, clearForcedScan, resetForceScanState } from './server/manifestFilter';
 
 let clientManager: KubescapeLanguageClientManager | null = null;
 let coordinator: ServerLifecycleCoordinator | null = null;
@@ -75,7 +76,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
             const activeEditor = vscode.window.activeTextEditor;
             if (activeEditor) {
                 outputChannel?.appendLine(`[Command] Saving active document to trigger scan: ${activeEditor.document.fileName}`);
-                await saveToTriggerScan(activeEditor.document, (command) => vscode.commands.executeCommand(command));
+                const overrideKey = forceScanForDocument(activeEditor.document);
+                try {
+                    const saved = await saveToTriggerScan(activeEditor.document, (command) => vscode.commands.executeCommand(command));
+                    if (!saved) {
+                        clearForcedScan(overrideKey);
+                    }
+                } catch (err: any) {
+                    clearForcedScan(overrideKey);
+                    throw err;
+                }
             } else {
                 vscode.window.showInformationMessage('No active document to scan. Open a Kubernetes YAML manifest and save it.');
             }
@@ -147,6 +157,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
  * Deactivates the Kubescape VS Code extension.
  */
 export async function deactivate(): Promise<void> {
+    resetForceScanState();
     if (coordinator) {
         coordinator.dispose();
         coordinator = null;

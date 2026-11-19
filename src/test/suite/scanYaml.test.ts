@@ -31,7 +31,18 @@ describe('Kubescape: Scan YAML', () => {
 
     it('saves a document with unsaved changes directly', async () => {
         const { document, executeCommand, calls } = fakeDocument(true);
-        await saveToTriggerScan(document, executeCommand);
+        const result = await saveToTriggerScan(document, executeCommand);
         assert.deepStrictEqual(calls, ['document.save']);
+        assert.strictEqual(result, true);
+    });
+
+    it('returns false when document.save() fails or cancels', async () => {
+        const document = {
+            isDirty: true,
+            save: async () => false,
+        };
+        const executeCommand = async () => {};
+        const result = await saveToTriggerScan(document, executeCommand);
+        assert.strictEqual(result, false);
     });
 });

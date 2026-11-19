@@ -23,10 +23,10 @@ export const FORCE_SAVE_COMMAND = 'workbench.action.files.save';
 export async function saveToTriggerScan(
     document: SavableDocument,
     executeCommand: (command: string) => PromiseLike<unknown>
-): Promise<void> {
+): Promise<boolean> {
     if (document.isDirty) {
-        await document.save();
-        return;
+        return Boolean(await document.save());
     }
-    await executeCommand(FORCE_SAVE_COMMAND);
+    const res = await executeCommand(FORCE_SAVE_COMMAND);
+    return res !== false;
 }

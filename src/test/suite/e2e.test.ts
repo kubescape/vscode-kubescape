@@ -3,6 +3,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { shouldScanDocumentOnSave } from '../../server/manifestFilter';
 
 function encodeFrame(msg: any): Buffer {
     const json = JSON.stringify(msg);
@@ -264,6 +265,288 @@ spec:
             method: 'exit',
         }));
 
+        const exitCode = await new Promise<number | null>((resolve) => {
+            proc.on('exit', (code) => resolve(code));
+        });
+        assert.strictEqual(exitCode, 0);
+    });
+
+    it('preserves complete multi-resource findings in realistic multi-manifest workspace across save filter (Section 3 Audit)', async () => {
+        // Create realistic multi-resource fixtures:
+        // 1. ServiceAccount
+        const saPath = path.join(tmpDir, 'serviceaccount.yaml');
+        const saContent = `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: privileged-sa
+  namespace: default
+`;
+        await fs.promises.writeFile(saPath, saContent, 'utf8');
+
+        // 2. ClusterRole with wildcards
+        const rolePath = path.join(tmpDir, 'clusterrole.yaml');
+        const roleContent = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: privileged-cluster-role
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+`;
+        await fs.promises.writeFile(rolePath, roleContent, 'utf8');
+
+        // 3. ClusterRoleBinding
+        const bindingPath = path.join(tmpDir, 'rolebinding.yaml');
+        const bindingContent = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: privileged-binding
+subjects:
+- kind: ServiceAccount
+  name: privileged-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: privileged-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+`;
+        await fs.promises.writeFile(bindingPath, bindingContent, 'utf8');
+
+        // 4. Pod referencing the ServiceAccount
+        const podPath = path.join(tmpDir, 'pod.yaml');
+        const podContent = `apiVersion: v1
+kind: Pod
+metadata:
+  name: bound-workload
+  namespace: default
+spec:
+  serviceAccountName: privileged-sa
+  containers:
+  - name: web
+    image: nginx
+    securityContext:
+      privileged: true
+      allowPrivilegeEscalation: true
+`;
+        await fs.promises.writeFile(podPath, podContent, 'utf8');
+
+        // 5. Non-Kubernetes package.json file
+        const packageJsonPath = path.join(tmpDir, 'package.json');
+        const packageJsonContent = JSON.stringify({ name: 'k8s-project', version: '1.0.0' });
+        await fs.promises.writeFile(packageJsonPath, packageJsonContent, 'utf8');
+
+        // 6. Plain config.json (no apiVersion/kind) and kustomization.yaml referencing it
+        const indirectConfigPath = path.join(tmpDir, 'app-config.json');
+        const indirectConfigContent = JSON.stringify({ insecure: true, debug: false });
+        await fs.promises.writeFile(indirectConfigPath, indirectConfigContent, 'utf8');
+
+        const kustomizePath = path.join(tmpDir, 'kustomization.yaml');
+        const kustomizeContent = `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+- name: generated-config
+  files:
+  - app-config.json
+resources:
+- pod.yaml
+- serviceaccount.yaml
+- clusterrole.yaml
+- rolebinding.yaml
+`;
+        await fs.promises.writeFile(kustomizePath, kustomizeContent, 'utf8');
+
+        // Verify Candidate Filter behavior:
+        // A. package.json save must be suppressed
+        const packageDoc = {
+            uri: { scheme: 'file', fsPath: packageJsonPath },
+            languageId: 'json',
+            fileName: packageJsonPath,
+            getText: () => packageJsonContent,
+        };
+        assert.strictEqual(shouldScanDocumentOnSave(packageDoc), false, 'package.json must be filtered out');
+
+        // B. pod.yaml save must be forwarded
+        const podDoc = {
+            uri: { scheme: 'file', fsPath: podPath },
+            languageId: 'yaml',
+            fileName: podPath,
+            getText: () => podContent,
+        };
+        assert.strictEqual(shouldScanDocumentOnSave(podDoc), true, 'pod.yaml must be forwarded as scan candidate');
+
+        // C. app-config.json save must be forwarded as indirect Kustomize dependency
+        const indirectDoc = {
+            uri: { scheme: 'file', fsPath: indirectConfigPath },
+            languageId: 'json',
+            fileName: indirectConfigPath,
+            getText: () => indirectConfigContent,
+        };
+        assert.strictEqual(shouldScanDocumentOnSave(indirectDoc), true, 'app-config.json must be forwarded as indirect dependency');
+
+        // 1. Initialize LSP server with multi-resource workspace
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            id: 10,
+            method: 'initialize',
+            params: {
+                processId: process.pid,
+                rootUri: `file://${tmpDir}`,
+                capabilities: {},
+            },
+        }));
+
+        const initResp = await nextMessage();
+        assert.strictEqual(initResp.id, 10);
+
+        // 2. Initialized
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'initialized',
+            params: {},
+        }));
+
+        // 3. didOpen for pod.yaml
+        const podUri = `file://${podPath}`;
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'textDocument/didOpen',
+            params: {
+                textDocument: {
+                    uri: podUri,
+                    languageId: 'yaml',
+                    version: 1,
+                    text: podContent,
+                },
+            },
+        }));
+
+        // Normalization and sorting helpers for deep equivalence verification
+        const normalizeDiag = (d: any) => ({
+            code: String(d.code),
+            message: String(d.message),
+            severity: Number(d.severity),
+            source: String(d.source),
+            href: d.codeDescription?.href ? String(d.codeDescription.href) : undefined,
+            startLine: d.range?.start?.line,
+            startChar: d.range?.start?.character,
+            endLine: d.range?.end?.line,
+            endChar: d.range?.end?.character,
+        });
+        const sortDiags = (arr: any[]) => arr.slice().sort((a, b) =>
+            (a.startLine - b.startLine) ||
+            (a.startChar - b.startChar) ||
+            a.code.localeCompare(b.code) ||
+            a.message.localeCompare(b.message)
+        );
+
+        // Helper to await diagnostics for a given URI
+        const awaitDiagnostics = async (uri: string, timeoutMs = 90000): Promise<any[]> => {
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+                const msg = await nextMessage(60000);
+                if (msg.method === 'textDocument/publishDiagnostics' && msg.params?.uri === uri) {
+                    return msg.params?.diagnostics || [];
+                }
+            }
+            throw new Error(`Timeout waiting for publishDiagnostics for ${uri}`);
+        };
+
+        // 4. Baseline Save (Unfiltered Path):
+        // Directly send didSave for pod.yaml as baseline scan
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'textDocument/didSave',
+            params: {
+                textDocument: { uri: podUri },
+            },
+        }));
+
+        const rawBaselineDiags = await awaitDiagnostics(podUri);
+        assert.ok(Array.isArray(rawBaselineDiags) && rawBaselineDiags.length > 0, 'Baseline must produce security findings');
+        const baselineDiags = sortDiags(rawBaselineDiags.map(normalizeDiag));
+        assert.ok(baselineDiags.length >= 3, `Expected at least 3 control findings, got ${baselineDiags.length}`);
+
+        // 5. Test Non-Candidate Save (Optimized Path: Suppressed):
+        // Verify saving package.json is suppressed and does not emit didSave
+        let didSaveTriggeredForNonCandidate = false;
+        if (shouldScanDocumentOnSave(packageDoc)) {
+            didSaveTriggeredForNonCandidate = true;
+            proc.stdin?.write(encodeFrame({
+                jsonrpc: '2.0',
+                method: 'textDocument/didSave',
+                params: {
+                    textDocument: { uri: `file://${packageJsonPath}` },
+                },
+            }));
+        }
+        assert.strictEqual(didSaveTriggeredForNonCandidate, false, 'Non-candidate package.json must NOT trigger didSave');
+
+        // 6. Test Candidate Save (Optimized Path: Forwarded):
+        // Verify saving pod.yaml is evaluated as candidate and forwarded
+        let didSaveTriggeredForCandidate = false;
+        if (shouldScanDocumentOnSave(podDoc)) {
+            didSaveTriggeredForCandidate = true;
+            proc.stdin?.write(encodeFrame({
+                jsonrpc: '2.0',
+                method: 'textDocument/didSave',
+                params: {
+                    textDocument: { uri: podUri },
+                },
+            }));
+        }
+        assert.strictEqual(didSaveTriggeredForCandidate, true, 'Candidate pod.yaml MUST trigger didSave');
+
+        const rawOptimizedDiags = await awaitDiagnostics(podUri);
+        const optimizedDiags = sortDiags(rawOptimizedDiags.map(normalizeDiag));
+
+        // 7. Complete Deep Equivalence Check:
+        // Confirm the complete normalized diagnostic set is 100% identical between baseline and optimized paths
+        assert.deepStrictEqual(optimizedDiags, baselineDiags, 'Optimized scan diagnostics must be 100% identical to baseline diagnostics');
+
+        // 8. Test Indirect Dependency Save via Real LSP:
+        // Indirect dependency app-config.json was already verified as forwarded by shouldScanDocumentOnSave(indirectDoc) above.
+        // Send didOpen then didSave for indirect dependency to real Kubescape LSP
+
+        // Send didOpen then didSave for indirect dependency to real Kubescape LSP
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'textDocument/didOpen',
+            params: {
+                textDocument: {
+                    uri: `file://${indirectConfigPath}`,
+                    languageId: 'json',
+                    version: 1,
+                    text: indirectConfigContent,
+                },
+            },
+        }));
+
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'textDocument/didSave',
+            params: {
+                textDocument: { uri: `file://${indirectConfigPath}` },
+            },
+        }));
+
+        // Real LSP server must trigger a workspace scan and publish diagnostics
+        const rawIndirectDiags = await awaitDiagnostics(podUri);
+        const indirectDiags = sortDiags(rawIndirectDiags.map(normalizeDiag));
+        assert.deepStrictEqual(indirectDiags, baselineDiags, 'Indirect dependency save must trigger scan preserving full workspace findings');
+
+        // 9. Shutdown & Exit
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            id: 20,
+            method: 'shutdown',
+        }));
+        await nextMessage();
+
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'exit',
+        }));
         const exitCode = await new Promise<number | null>((resolve) => {
             proc.on('exit', (code) => resolve(code));
         });
