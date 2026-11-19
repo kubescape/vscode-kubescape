@@ -8,9 +8,22 @@ import {
 } from 'vscode-languageclient/node';
 import { LifecycleQueue, RestartResult, createServerOptions } from './queue';
 import { waitForProcessExit, terminateProcess, isProcessAlive } from './process';
-import { shouldScanDocumentOnSave, resetForceScanState, ScannableDocument } from './manifestFilter';
+import {
+    shouldScanDocumentOnSave,
+    resetForceScanState,
+    clearForcedScansForOwner,
+    createDidSaveMiddleware,
+    ScannableDocument
+} from './manifestFilter';
 
-export { waitForProcessExit, terminateProcess, isProcessAlive, RestartResult, createServerOptions };
+export {
+    waitForProcessExit,
+    terminateProcess,
+    isProcessAlive,
+    RestartResult,
+    createServerOptions,
+    createDidSaveMiddleware
+};
 
 export type LanguageClientFactory = (
     id: string,
@@ -50,6 +63,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
     private manifestFilter: (doc: ScannableDocument) => boolean;
     private isDisposed: boolean = false;
     private shutdownPromise: Promise<void> | null = null;
+    private instanceId: string = 'client_' + Math.random().toString(36).slice(2);
 
     constructor(
         outputChannel: vscode.OutputChannel,
@@ -90,6 +104,10 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
 
     public getIsDisposed(): boolean {
         return this.isDisposed;
+    }
+
+    public getInstanceId(): string {
+        return this.instanceId;
     }
 
     /**
@@ -156,6 +174,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         }
 
         this.outputChannel.appendLine('[LSP] Restarting Kubescape Language Server...');
+        clearForcedScansForOwner(this.instanceId);
         await this.internalStop();
 
         // Re-check disposed and generation state after stop completes
@@ -207,15 +226,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             outputChannel: this.outputChannel,
             traceOutputChannel: this.outputChannel,
             middleware: {
-                didSave: async (data: vscode.TextDocument, next: (data: vscode.TextDocument) => Promise<void>) => {
-                    const shouldScan = this.manifestFilter(data);
-                    if (shouldScan) {
-                        return next(data);
-                    }
-                    this.outputChannel.appendLine(
-                        `[LSP Scoped Scan] Skipping save-time workspace scan: document "${data.fileName}" contains no Kubernetes manifests or configurations.`
-                    );
-                },
+                didSave: createDidSaveMiddleware<vscode.TextDocument>(this.manifestFilter, this.outputChannel),
             },
             errorHandler: {
                 error: (error, message, count) => {
@@ -393,6 +404,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             return;
         }
         this.isDisposed = true;
+        clearForcedScansForOwner(this.instanceId);
         resetForceScanState();
         if (this.shutdownPromise) {
             this.shutdownPromise.then(

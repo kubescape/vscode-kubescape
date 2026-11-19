@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -59,11 +60,52 @@ const KNOWN_NON_K8S_FILENAMES = new Set([
 ]);
 
 /**
- * URI-scoped forced scans with expiration (in milliseconds) to prevent state leaks,
- * cross-document override consumption, and stale state across client restarts.
+ * Injectable clock for controlled timing and expiration testing.
  */
-const forcedScanUris = new Map<string, number>();
-const FORCE_SCAN_EXPIRY_MS = 10000; // 10 seconds
+export type TimeProvider = () => number;
+let timeProvider: TimeProvider = () => Date.now();
+
+export function setTimeProvider(provider: TimeProvider): void {
+    timeProvider = provider;
+}
+
+export function resetTimeProvider(): void {
+    timeProvider = () => Date.now();
+}
+
+/**
+ * Handle representing an active manual save attempt.
+ */
+export interface ForcedScanHandle {
+    readonly token: string;
+    readonly key: string;
+    readonly ownerId?: string;
+    readonly isActive: boolean;
+    readonly isConsumed: boolean;
+    revoke(): void;
+    complete(): void;
+}
+
+/**
+ * Represents an active or unmanaged manual save override attempt.
+ */
+export interface ForcedScanAttempt {
+    readonly token: string;
+    readonly uriKey: string;
+    readonly ownerId?: string;
+    readonly createdAt: number;
+    readonly expiresAt: number;
+    isActive: boolean;
+    isConsumed: boolean;
+}
+
+/**
+ * URI-scoped forced scans mapped by canonical URI key.
+ * Modeled around a state-based lifecycle: active attempts cannot expire merely
+ * due to elapsed time, while unmanaged/abandoned attempts expire safely.
+ */
+const forcedScanAttempts = new Map<string, ForcedScanAttempt>();
+export const DEFAULT_ABANDONED_TIMEOUT_MS = 60000; // 60s safety timeout to clean up abandoned attempts
 
 /**
  * Normalizes document URI to a canonical string key.
@@ -87,68 +129,183 @@ export function getDocumentKey(docOrUri: ScannableDocument | string): string {
 }
 
 /**
- * Flags that a specific document save was explicitly requested by a user command
- * (e.g. "Kubescape: Scan YAML") and must trigger a scan regardless of content heuristics.
- * Returns the normalized key for deterministic tracking.
+ * Arms an active manual save attempt with a state-based lifecycle.
+ * While the attempt remains active (held by the caller during saveToTriggerScan),
+ * elapsed time alone CANNOT invalidate it, ensuring slow formatters or remote filesystems
+ * never lose the override. When the attempt ends, calling complete() or revoke() cleans it up.
  */
-export function forceScanForDocument(docOrUri: ScannableDocument | string): string {
+export function armForcedScan(
+    docOrUri: ScannableDocument | string,
+    ownerId?: string,
+    abandonedTimeoutMs: number = DEFAULT_ABANDONED_TIMEOUT_MS
+): ForcedScanHandle {
     const key = getDocumentKey(docOrUri);
-    if (key) {
-        forcedScanUris.set(key, Date.now() + FORCE_SCAN_EXPIRY_MS);
+    if (!key) {
+        return {
+            token: '',
+            key: '',
+            isActive: false,
+            isConsumed: false,
+            revoke: () => {},
+            complete: () => {},
+        };
     }
+    const token = crypto.randomBytes(8).toString('hex');
+    const now = timeProvider();
+    const attempt: ForcedScanAttempt = {
+        token,
+        uriKey: key,
+        ownerId,
+        createdAt: now,
+        expiresAt: now + abandonedTimeoutMs,
+        isActive: true, // Marked active: cannot expire due to elapsed time while active
+        isConsumed: false,
+    };
+    forcedScanAttempts.set(key, attempt);
+
+    return {
+        token,
+        key,
+        ownerId,
+        get isActive() {
+            return attempt.isActive;
+        },
+        get isConsumed() {
+            return attempt.isConsumed;
+        },
+        revoke() {
+            attempt.isActive = false;
+            forcedScanAttempts.delete(key);
+        },
+        complete() {
+            attempt.isActive = false;
+            if (!attempt.isConsumed) {
+                forcedScanAttempts.delete(key);
+            }
+        },
+    };
+}
+
+/**
+ * Arms an unmanaged forced scan override.
+ * Unmanaged attempts are subject to the abandoned timeout and clean up automatically.
+ */
+export function forceScanForDocument(
+    docOrUri: ScannableDocument | string,
+    ownerId?: string,
+    timeoutMs: number = DEFAULT_ABANDONED_TIMEOUT_MS
+): string {
+    const key = getDocumentKey(docOrUri);
+    if (!key) {
+        return '';
+    }
+    const token = crypto.randomBytes(8).toString('hex');
+    const now = timeProvider();
+    const attempt: ForcedScanAttempt = {
+        token,
+        uriKey: key,
+        ownerId,
+        createdAt: now,
+        expiresAt: now + timeoutMs,
+        isActive: false, // unmanaged: will expire after timeoutMs
+        isConsumed: false,
+    };
+    forcedScanAttempts.set(key, attempt);
     return key;
 }
 
 /**
- * Revokes a pending forced scan override for a document (e.g. if a save command failed).
+ * Revokes a pending forced scan override for a document (e.g. if a save command failed or cancelled).
  */
 export function clearForcedScan(keyOrDoc: ScannableDocument | string): void {
     const key = getDocumentKey(keyOrDoc);
     if (key) {
-        forcedScanUris.delete(key);
+        const attempt = forcedScanAttempts.get(key);
+        if (attempt) {
+            attempt.isActive = false;
+            forcedScanAttempts.delete(key);
+        }
     }
 }
 
 /**
- * Consumes the forced scan flag for a specific document if active and unexpired.
+ * Clears pending forced scans belonging to a specific owner/client.
+ * Ensures a retiring client's pending state is purged without disturbing other clients' attempts.
+ */
+export function clearForcedScansForOwner(ownerId: string): void {
+    if (!ownerId) {
+        return;
+    }
+    for (const [key, attempt] of forcedScanAttempts.entries()) {
+        if (attempt.ownerId === ownerId) {
+            attempt.isActive = false;
+            forcedScanAttempts.delete(key);
+        }
+    }
+}
+
+/**
+ * Consumes the forced scan override for a specific document if active, matching owner, and unexpired.
  * Consumed strictly once.
  */
-export function consumeForceScan(docOrUri: ScannableDocument | string): boolean {
+export function consumeForceScan(docOrUri: ScannableDocument | string, ownerId?: string): boolean {
     const key = getDocumentKey(docOrUri);
     if (!key) {
         return false;
     }
-    const expiry = forcedScanUris.get(key);
-    if (expiry === undefined) {
+    const attempt = forcedScanAttempts.get(key);
+    if (!attempt) {
         return false;
     }
-    forcedScanUris.delete(key);
-    return Date.now() <= expiry;
+    if (ownerId && attempt.ownerId && attempt.ownerId !== ownerId) {
+        return false;
+    }
+
+    // 1. If the attempt is actively in progress, elapsed time alone CANNOT invalidate it!
+    if (attempt.isActive) {
+        attempt.isConsumed = true;
+        attempt.isActive = false;
+        forcedScanAttempts.delete(key);
+        return true;
+    }
+
+    // 2. Unmanaged / inactive attempt: subject to abandoned timeout
+    forcedScanAttempts.delete(key);
+    return timeProvider() <= attempt.expiresAt;
 }
 
 /**
  * Resets all forced scan overrides and internal caches. Called on client restart and extension deactivation.
  */
 export function resetForceScanState(): void {
-    forcedScanUris.clear();
+    forcedScanAttempts.clear();
     kustomizeCache.clear();
     helmChartCache.clear();
+    templateFileCache.clear();
 }
 
 /**
  * Returns whether a forced scan override is currently pending for a document.
  */
-export function isScanForcedForDocument(docOrUri: ScannableDocument | string): boolean {
+export function isScanForcedForDocument(docOrUri: ScannableDocument | string, ownerId?: string): boolean {
     const key = getDocumentKey(docOrUri);
     if (!key) {
         return false;
     }
-    const expiry = forcedScanUris.get(key);
-    if (expiry === undefined) {
+    const attempt = forcedScanAttempts.get(key);
+    if (!attempt) {
         return false;
     }
-    if (Date.now() > expiry) {
-        forcedScanUris.delete(key);
+    if (ownerId && attempt.ownerId && attempt.ownerId !== ownerId) {
+        return false;
+    }
+    // Active attempt is always valid regardless of elapsed time
+    if (attempt.isActive) {
+        return true;
+    }
+    // Unmanaged attempt expires after abandoned timeout
+    if (timeProvider() > attempt.expiresAt) {
+        forcedScanAttempts.delete(key);
         return false;
     }
     return true;
@@ -162,11 +319,30 @@ export function isScanForcedForDocument(docOrUri: ScannableDocument | string): b
  * Follows the conservative rule: Never suppress a save unless the document is
  * confidently classified as non-Kubernetes. Uncertain/ambiguous files trigger scanning.
  */
-export function shouldScanDocumentOnSave(document: ScannableDocument): boolean {
-    if (consumeForceScan(document)) {
+export function shouldScanDocumentOnSave(document: ScannableDocument, ownerId?: string): boolean {
+    if (consumeForceScan(document, ownerId)) {
         return true;
     }
     return isCandidateForKubernetesScan(document);
+}
+
+/**
+ * Creates the production didSave middleware for the Kubescape Language Client.
+ * Filters non-candidate saves while forwarding manifests and indirect dependencies.
+ */
+export function createDidSaveMiddleware<T extends ScannableDocument = ScannableDocument>(
+    filter: (doc: ScannableDocument) => boolean = shouldScanDocumentOnSave,
+    outputChannel?: { appendLine(msg: string): void }
+): (data: T, next: (data: T) => Promise<void>) => Promise<void> {
+    return async (data: T, next: (data: T) => Promise<void>) => {
+        const shouldScan = filter(data);
+        if (shouldScan) {
+            return next(data);
+        }
+        outputChannel?.appendLine(
+            `[LSP Scoped Scan] Skipping save-time workspace scan: document "${data.fileName}" contains no Kubernetes manifests or configurations.`
+        );
+    };
 }
 
 /**
@@ -222,10 +398,11 @@ export function isCandidateForKubernetesScan(document: ScannableDocument): boole
         return false;
     }
 
-    // Fast check on empty document content
+    // Check document content
     const text = document.getText();
     if (!text || text.trim().length === 0) {
-        return false;
+        // An empty file referenced by a generator or Helm template can still affect rendered resources
+        return isKustomizeDependency(filePath) || isHelmDependency(filePath);
     }
 
     // 5. Strong Kubernetes Evidence Check (Checked BEFORE exclusions!)
@@ -285,16 +462,60 @@ export function isCandidateForKubernetesScan(document: ScannableDocument): boole
 }
 
 /**
- * Checks whether targetPath or its basename is referenced as a discrete token within file content.
+ * Extracts referenced file paths from a Kustomize configuration.
+ * Handles generators (files, envs), resources, patches, and component lists.
+ * Normalizes all paths relative to the kustomization directory and ignores URL schemes.
  */
-function isPathReferencedInContent(content: string, targetPath: string): boolean {
-    if (!targetPath || !content) {
-        return false;
+export function extractKustomizeReferences(content: string): Set<string> {
+    const refs = new Set<string>();
+    const lines = content.split(/\r?\n/);
+    for (const rawLine of lines) {
+        const commentIdx = rawLine.indexOf('#');
+        const line = (commentIdx >= 0 ? rawLine.slice(0, commentIdx) : rawLine).trim();
+        if (!line) {
+            continue;
+        }
+
+        const candidateTokens: string[] = [];
+
+        // Match list items, e.g. - "foo.json" or - foo.json
+        const listMatch = line.match(/^-\s+(.+)$/);
+        if (listMatch) {
+            candidateTokens.push(listMatch[1].trim());
+        }
+
+        // Match property assignments, e.g. path: foo.json
+        const propMatch = line.match(/^\w+:\s*(.+)$/);
+        if (propMatch) {
+            candidateTokens.push(propMatch[1].trim());
+        }
+
+        // Match inline array elements [ ... ]
+        const bracketMatch = line.match(/\[(.*)\]/);
+        if (bracketMatch) {
+            for (const item of bracketMatch[1].split(',')) {
+                candidateTokens.push(item.trim());
+            }
+        }
+
+        for (let token of candidateTokens) {
+            token = token.replace(/^["']|["']$/g, '').trim();
+            if (!token) {
+                continue;
+            }
+            // Handle key=path syntax, e.g. config-key=sub/config.json
+            const eqIdx = token.indexOf('=');
+            if (eqIdx >= 0) {
+                token = token.slice(eqIdx + 1).replace(/^["']|["']$/g, '').trim();
+            }
+            if (token && !token.startsWith('http://') && !token.startsWith('https://')) {
+                // Normalize posix path: collapses '//', resolves './', etc.
+                const normalized = path.posix.normalize(token.replace(/\\/g, '/')).replace(/^\.\//, '');
+                refs.add(normalized);
+            }
+        }
     }
-    const cleanPath = targetPath.replace(/^\.\//, '');
-    const escaped = cleanPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`(?:^|[\\s'"=,\\[\\]/])${escaped}(?:$|[\\s'"=,\\[\\]#])`, 'm');
-    return regex.test(content);
+    return refs;
 }
 
 /**
@@ -304,9 +525,18 @@ function isPathReferencedInContent(content: string, targetPath: string): boolean
 const MAX_SEARCH_DEPTH = 8;
 
 interface KustomizeCacheEntry {
-    mtimeMs: number;
-    size: number;
-    content: string;
+    contentHash: string;
+    references: Set<string>;
+}
+
+interface TemplateAnalysis {
+    usesGlobOrComputed: boolean;
+    literals: Set<string>;
+}
+
+interface TemplateFileCacheEntry {
+    contentHash: string;
+    analysis: TemplateAnalysis;
 }
 
 interface HelmChartCacheEntry {
@@ -317,6 +547,14 @@ interface HelmChartCacheEntry {
 
 const kustomizeCache = new Map<string, KustomizeCacheEntry>();
 const helmChartCache = new Map<string, HelmChartCacheEntry>();
+const templateFileCache = new Map<string, TemplateFileCacheEntry>();
+
+/**
+ * Computes a SHA-256 hash of a string buffer.
+ */
+function computeSha256(content: string): string {
+    return crypto.createHash('sha256').update(content).digest('hex');
+}
 
 /**
  * Recursively locates template files inside a Helm templates directory.
@@ -346,47 +584,65 @@ function findTemplateFiles(dir: string, depth = 0): string[] {
 }
 
 /**
- * Computes an aggregated metadata fingerprint across all template files in a templates directory.
- * Includes file paths, mtimeMs, and size for every template file.
- * This guarantees reliable invalidation when existing templates are edited in-place, created, or deleted,
- * which does not alter directory mtime on POSIX or Windows filesystems.
+ * Analyzes a Helm template for static or dynamic .Files usages and aliases.
+ * Distinguishes between static literals (double quotes, single quotes, backticks),
+ * aliases (e.g. {{ $files := .Files }}), piped invocations, wildcard globbing,
+ * and computed/variable expressions.
  */
-function getTemplatesFingerprint(templateFiles: string[]): string {
-    return templateFiles.map(f => {
-        try {
-            const s = fs.statSync(f);
-            return `${f}:${s.mtimeMs}:${s.size}`;
-        } catch {
-            return `${f}:missing`;
-        }
-    }).join(';');
-}
+export function analyzeHelmTemplate(content: string): TemplateAnalysis {
+    if (!content.includes('.Files') && !/\$\w+\.(?:Get|GetBytes|Glob|Lines)\b/.test(content)) {
+        return { usesGlobOrComputed: false, literals: new Set() };
+    }
 
-/**
- * Analyzes a Helm template for static or dynamic .Files usages.
- * Correctly distinguishes between static literals (double quotes, single quotes, backticks),
- * piped invocations, wildcard globbing, and computed/variable expressions.
- */
-function analyzeHelmTemplate(content: string): { usesGlobOrComputed: boolean; literals: string[] } {
-    if (!content.includes('.Files.')) {
-        return { usesGlobOrComputed: false, literals: [] };
+    let usesGlobOrComputed = false;
+    const literals = new Set<string>();
+
+    // 1. Detect .Files aliases: e.g. {{ $files := .Files }} or $f = .Files
+    const hasFilesAlias = /\$\w+\s*:?=\s*\.Files\b/.test(content);
+    if (hasFilesAlias) {
+        usesGlobOrComputed = true;
     }
-    const usesGlob = content.includes('.Files.Glob');
-    // Check if .Files.Get is preceded by a pipe, e.g. "path" | .Files.Get or $file | .Files.Get
-    const hasPipedGet = /\|\s*\.Files\.(?:Get|GetBytes)/.test(content);
-    // Check if .Files.Get is called with non-literal argument (variable $, expression (, or identifier)
-    const hasComputedArgument = /\.Files\.(?:Get|GetBytes)\s*(\$|\(|\.[a-zA-Z]|[a-zA-Z])/.test(content);
-    // Extract static literals: double-quoted, single-quoted, or backtick-quoted
-    const literals: string[] = [];
-    const strictLiteralRegex = /\.Files\.(?:Get|GetBytes)\s*\(?\s*["'`]([^"'`]+)["'`]/g;
+
+    // 2. Detect method calls on variables: e.g. $files.Get "..." or $f.GetBytes
+    const variableCallRegex = /\$(\w+)\.(Get|GetBytes|Glob|Lines)\s*(?:\(?\s*["'`]([^"'`]+)["'`])?/g;
+    let varMatch: RegExpExecArray | null;
+    while ((varMatch = variableCallRegex.exec(content)) !== null) {
+        usesGlobOrComputed = true;
+        if (varMatch[3]) {
+            const norm = path.posix.normalize(varMatch[3].replace(/\\/g, '/')).replace(/^\.\//, '');
+            literals.add(norm);
+        }
+    }
+
+    // 3. Detect .Files.Glob
+    if (content.includes('.Files.Glob')) {
+        usesGlobOrComputed = true;
+    }
+
+    // 4. Detect piped .Files invocations, e.g. "path" | .Files.Get
+    if (/\|\s*\.Files\.(?:Get|GetBytes)/.test(content)) {
+        usesGlobOrComputed = true;
+    }
+
+    // 5. Detect computed/variable arguments, e.g. .Files.Get $var or .Files.Get (printf ...)
+    if (/\.Files\.(?:Get|GetBytes)\s*(\$|\(|\.[a-zA-Z]|[a-zA-Z])/.test(content)) {
+        usesGlobOrComputed = true;
+    }
+
+    // 6. Direct literal references from .Files.Get / .Files.GetBytes
+    const literalRegex = /\.Files\.(?:Get|GetBytes)\s*\(?\s*["'`]([^"'`]+)["'`]/g;
     let match: RegExpExecArray | null;
-    while ((match = strictLiteralRegex.exec(content)) !== null) {
-        literals.push(match[1].replace(/^\.\//, ''));
+    while ((match = literalRegex.exec(content)) !== null) {
+        const norm = path.posix.normalize(match[1].replace(/\\/g, '/')).replace(/^\.\//, '');
+        literals.add(norm);
     }
-    return {
-        usesGlobOrComputed: usesGlob || hasPipedGet || hasComputedArgument,
-        literals,
-    };
+
+    // 7. General .Files usage without direct methods or alias
+    if (!hasFilesAlias && !content.includes('.Files.') && content.includes('.Files')) {
+        usesGlobOrComputed = true;
+    }
+
+    return { usesGlobOrComputed, literals };
 }
 
 /**
@@ -405,31 +661,30 @@ export function isKustomizeDependency(filePath: string): boolean {
             for (const kFilename of KUSTOMIZE_FILENAMES) {
                 const kPath = path.join(currentDir, kFilename);
                 if (fs.existsSync(kPath)) {
-                    let content: string;
+                    let references: Set<string>;
                     try {
-                        const stat = fs.statSync(kPath);
+                        const content = fs.readFileSync(kPath, 'utf8');
+                        const contentHash = computeSha256(content);
                         const cached = kustomizeCache.get(kPath);
-                        if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
-                            content = cached.content;
+                        if (cached && cached.contentHash === contentHash) {
+                            references = cached.references;
                         } else {
-                            content = fs.readFileSync(kPath, 'utf8');
+                            references = extractKustomizeReferences(content);
                             if (kustomizeCache.size > 100) {
                                 kustomizeCache.clear();
                             }
-                            kustomizeCache.set(kPath, { mtimeMs: stat.mtimeMs, size: stat.size, content });
+                            kustomizeCache.set(kPath, { contentHash, references });
                         }
                     } catch {
                         kustomizeCache.delete(kPath);
                         continue;
                     }
 
-                    // Strict relative path matching:
-                    // When kustomization.yaml is in the same directory, relPath is "config.json".
-                    // When kustomization.yaml is an ancestor, relPath is "sub/config.json".
-                    // Matching relPath prevents cross-directory false positives between files sharing
-                    // the same basename (e.g. apps/auth/config.json vs apps/billing/config.json).
-                    const relPath = path.relative(currentDir, filePath).replace(/\\/g, '/');
-                    if (isPathReferencedInContent(content, relPath)) {
+                    // Exact normalized relative path matching:
+                    // Compares the target file's relative path from the kustomization root
+                    // against complete normalized references in kustomization.yaml.
+                    const targetRelPath = path.posix.normalize(path.relative(currentDir, filePath).replace(/\\/g, '/')).replace(/^\.\//, '');
+                    if (references.has(targetRelPath)) {
                         return true;
                     }
                 } else {
@@ -443,7 +698,7 @@ export function isKustomizeDependency(filePath: string): boolean {
             currentDir = parent;
         }
     } catch {
-        // Safe fallback on any filesystem or permission error
+        // Safe fallback on filesystem or permission error
     }
     return false;
 }
@@ -475,7 +730,7 @@ export function isHelmDependency(filePath: string): boolean {
             const chartYmlPath = path.join(currentDir, 'Chart.yml');
 
             if (fs.existsSync(chartYamlPath) || fs.existsSync(chartYmlPath)) {
-                const relPath = path.relative(currentDir, filePath).replace(/\\/g, '/');
+                const relPath = path.posix.normalize(path.relative(currentDir, filePath).replace(/\\/g, '/')).replace(/^\.\//, '');
 
                 // Files in standard Helm `files/` directory are intended for .Files.Get
                 if (relPath.startsWith('files/')) {
@@ -485,28 +740,57 @@ export function isHelmDependency(filePath: string): boolean {
                 const templatesDir = path.join(currentDir, 'templates');
                 if (fs.existsSync(templatesDir)) {
                     let chartInfo = helmChartCache.get(currentDir);
+                    let hasReadErrors = false;
+
                     try {
                         const templateFiles = findTemplateFiles(templatesDir);
-                        const fingerprint = getTemplatesFingerprint(templateFiles);
+                        const templateHashes: string[] = [];
+                        const analyses: TemplateAnalysis[] = [];
+
+                        for (const tf of templateFiles) {
+                            try {
+                                const content = fs.readFileSync(tf, 'utf8');
+                                const contentHash = computeSha256(content);
+                                templateHashes.push(`${tf}:${contentHash}`);
+
+                                const cachedAnalysis = templateFileCache.get(tf);
+                                if (cachedAnalysis && cachedAnalysis.contentHash === contentHash) {
+                                    analyses.push(cachedAnalysis.analysis);
+                                } else {
+                                    const analysis = analyzeHelmTemplate(content);
+                                    if (templateFileCache.size > 200) {
+                                        templateFileCache.clear();
+                                    }
+                                    templateFileCache.set(tf, { contentHash, analysis });
+                                    analyses.push(analysis);
+                                }
+                            } catch {
+                                hasReadErrors = true;
+                            }
+                        }
+
+                        // If any template cannot be read, do not cache an incomplete negative result.
+                        // Treat the chart as uncertain for this save and retry on later saves.
+                        if (hasReadErrors) {
+                            helmChartCache.delete(currentDir);
+                            return true;
+                        }
+
+                        const fingerprint = templateHashes.join(';');
 
                         if (!chartInfo || chartInfo.fingerprint !== fingerprint) {
                             let usesGlobOrComputed = false;
                             const literals = new Set<string>();
 
-                            for (const tf of templateFiles) {
-                                try {
-                                    const content = fs.readFileSync(tf, 'utf8');
-                                    const analysis = analyzeHelmTemplate(content);
-                                    if (analysis.usesGlobOrComputed) {
-                                        usesGlobOrComputed = true;
-                                    }
-                                    for (const lit of analysis.literals) {
-                                        literals.add(lit);
-                                    }
-                                } catch {
-                                    // Ignore unreadable template file
+                            for (const analysis of analyses) {
+                                if (analysis.usesGlobOrComputed) {
+                                    usesGlobOrComputed = true;
+                                }
+                                for (const lit of analysis.literals) {
+                                    literals.add(lit);
                                 }
                             }
+
                             chartInfo = { fingerprint, usesGlobOrComputed, literals };
                             if (helmChartCache.size > 100) {
                                 helmChartCache.clear();
@@ -514,14 +798,16 @@ export function isHelmDependency(filePath: string): boolean {
                             helmChartCache.set(currentDir, chartInfo);
                         }
                     } catch {
-                        // If inspection fails, bypass cache safely
+                        // On filesystem inspection errors, treat as uncertain without caching
+                        return true;
                     }
 
                     if (chartInfo) {
                         if (chartInfo.usesGlobOrComputed) {
                             return true;
                         }
-                        if (chartInfo.literals.has(relPath) || chartInfo.literals.has(basename)) {
+                        // Exact chart-relative path match (no basename fallback)
+                        if (chartInfo.literals.has(relPath)) {
                             return true;
                         }
                     }
@@ -597,9 +883,9 @@ function checkKubernetesJsonEvidence(text: string): EvidenceLevel {
  * Analyzes YAML content for Kubernetes resource structures.
  */
 function checkKubernetesYamlEvidence(text: string): EvidenceLevel {
-    // 1. Flexible regex matching apiVersion and kind (supports quotes, inline comments, whitespace)
-    const hasApiVersion = /(?:^|\n)\s*['"]?apiVersion['"]?\s*:\s*[^\s#]+/im.test(text);
-    const hasKind = /(?:^|\n)\s*['"]?kind['"]?\s*:\s*[^\s#]+/im.test(text);
+    // 1. Flexible regex matching apiVersion and kind (supports block YAML, flow mappings e.g. {apiVersion: ..., kind: ...}, quotes, inline comments, and whitespace)
+    const hasApiVersion = /(?:^|\n|[,\{])\s*['"]?apiVersion['"]?\s*:\s*[^\s,#\}]+/im.test(text);
+    const hasKind = /(?:^|\n|[,\{])\s*['"]?kind['"]?\s*:\s*[^\s,#\}]+/im.test(text);
 
     if (hasApiVersion && hasKind) {
         return 'strong_k8s';

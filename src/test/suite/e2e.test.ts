@@ -3,7 +3,7 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { shouldScanDocumentOnSave } from '../../server/manifestFilter';
+import { shouldScanDocumentOnSave, createDidSaveMiddleware } from '../../server/manifestFilter';
 
 function encodeFrame(msg: any): Buffer {
     const json = JSON.stringify(msg);
@@ -248,6 +248,18 @@ spec:
             assert.ok(typeof d.range.start.character === 'number', 'Range must have start character');
         }
 
+        // Helper to await matching response message while skipping unrelated notifications
+        const awaitResponse = async (id: number, timeoutMs = 30000): Promise<any> => {
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+                const msg = await nextMessage(15000);
+                if (msg && msg.id === id) {
+                    return msg;
+                }
+            }
+            throw new Error(`Timeout waiting for response id ${id}`);
+        };
+
         // 6. Shutdown
         proc.stdin?.write(encodeFrame({
             jsonrpc: '2.0',
@@ -255,7 +267,7 @@ spec:
             method: 'shutdown',
         }));
 
-        const shutdownResp = await nextMessage();
+        const shutdownResp = await awaitResponse(2);
         assert.strictEqual(shutdownResp.id, 2);
         assert.strictEqual(shutdownResp.result, null);
 
@@ -452,6 +464,21 @@ resources:
             throw new Error(`Timeout waiting for publishDiagnostics for ${uri}`);
         };
 
+        // Helper to await matching response message while skipping unrelated notifications
+        const awaitResponse = async (id: number, timeoutMs = 30000): Promise<any> => {
+            const deadline = Date.now() + timeoutMs;
+            while (Date.now() < deadline) {
+                const msg = await nextMessage(15000);
+                if (msg && msg.id === id) {
+                    return msg;
+                }
+            }
+            throw new Error(`Timeout waiting for response id ${id}`);
+        };
+
+        // Create the actual production save-filtering middleware
+        const productionMiddleware = createDidSaveMiddleware(shouldScanDocumentOnSave);
+
         // 4. Baseline Save (Unfiltered Path):
         // Directly send didSave for pod.yaml as baseline scan
         proc.stdin?.write(encodeFrame({
@@ -467,11 +494,11 @@ resources:
         const baselineDiags = sortDiags(rawBaselineDiags.map(normalizeDiag));
         assert.ok(baselineDiags.length >= 3, `Expected at least 3 control findings, got ${baselineDiags.length}`);
 
-        // 5. Test Non-Candidate Save (Optimized Path: Suppressed):
-        // Verify saving package.json is suppressed and does not emit didSave
-        let didSaveTriggeredForNonCandidate = false;
-        if (shouldScanDocumentOnSave(packageDoc)) {
-            didSaveTriggeredForNonCandidate = true;
+        // 5. Test Non-Candidate Save (Optimized Path: Exercising Production Middleware):
+        // Verify saving package.json is intercepted and suppressed by production middleware
+        let packageSaveForwarded = false;
+        await productionMiddleware(packageDoc as any, async () => {
+            packageSaveForwarded = true;
             proc.stdin?.write(encodeFrame({
                 jsonrpc: '2.0',
                 method: 'textDocument/didSave',
@@ -479,14 +506,14 @@ resources:
                     textDocument: { uri: `file://${packageJsonPath}` },
                 },
             }));
-        }
-        assert.strictEqual(didSaveTriggeredForNonCandidate, false, 'Non-candidate package.json must NOT trigger didSave');
+        });
+        assert.strictEqual(packageSaveForwarded, false, 'Production middleware must NOT forward didSave for package.json');
 
-        // 6. Test Candidate Save (Optimized Path: Forwarded):
-        // Verify saving pod.yaml is evaluated as candidate and forwarded
-        let didSaveTriggeredForCandidate = false;
-        if (shouldScanDocumentOnSave(podDoc)) {
-            didSaveTriggeredForCandidate = true;
+        // 6. Test Candidate Save (Optimized Path: Exercising Production Middleware):
+        // Verify saving pod.yaml is evaluated as candidate and forwarded by production middleware
+        let podSaveForwarded = false;
+        await productionMiddleware(podDoc as any, async () => {
+            podSaveForwarded = true;
             proc.stdin?.write(encodeFrame({
                 jsonrpc: '2.0',
                 method: 'textDocument/didSave',
@@ -494,8 +521,8 @@ resources:
                     textDocument: { uri: podUri },
                 },
             }));
-        }
-        assert.strictEqual(didSaveTriggeredForCandidate, true, 'Candidate pod.yaml MUST trigger didSave');
+        });
+        assert.strictEqual(podSaveForwarded, true, 'Production middleware MUST forward didSave for candidate pod.yaml');
 
         const rawOptimizedDiags = await awaitDiagnostics(podUri);
         const optimizedDiags = sortDiags(rawOptimizedDiags.map(normalizeDiag));
@@ -505,10 +532,7 @@ resources:
         assert.deepStrictEqual(optimizedDiags, baselineDiags, 'Optimized scan diagnostics must be 100% identical to baseline diagnostics');
 
         // 8. Test Indirect Dependency Save via Real LSP:
-        // Indirect dependency app-config.json was already verified as forwarded by shouldScanDocumentOnSave(indirectDoc) above.
-        // Send didOpen then didSave for indirect dependency to real Kubescape LSP
-
-        // Send didOpen then didSave for indirect dependency to real Kubescape LSP
+        // Open indirect dependency in document store
         proc.stdin?.write(encodeFrame({
             jsonrpc: '2.0',
             method: 'textDocument/didOpen',
@@ -522,13 +546,19 @@ resources:
             },
         }));
 
-        proc.stdin?.write(encodeFrame({
-            jsonrpc: '2.0',
-            method: 'textDocument/didSave',
-            params: {
-                textDocument: { uri: `file://${indirectConfigPath}` },
-            },
-        }));
+        // Verify production middleware forwards indirect dependency save
+        let indirectSaveForwarded = false;
+        await productionMiddleware(indirectDoc as any, async () => {
+            indirectSaveForwarded = true;
+            proc.stdin?.write(encodeFrame({
+                jsonrpc: '2.0',
+                method: 'textDocument/didSave',
+                params: {
+                    textDocument: { uri: `file://${indirectConfigPath}` },
+                },
+            }));
+        });
+        assert.strictEqual(indirectSaveForwarded, true, 'Production middleware MUST forward didSave for indirect dependency');
 
         // Real LSP server must trigger a workspace scan and publish diagnostics
         const rawIndirectDiags = await awaitDiagnostics(podUri);
@@ -541,7 +571,9 @@ resources:
             id: 20,
             method: 'shutdown',
         }));
-        await nextMessage();
+        const shutdownResp = await awaitResponse(20);
+        assert.strictEqual(shutdownResp.id, 20);
+        assert.strictEqual(shutdownResp.result, null);
 
         proc.stdin?.write(encodeFrame({
             jsonrpc: '2.0',

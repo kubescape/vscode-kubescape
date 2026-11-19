@@ -5,6 +5,7 @@ import * as path from 'path';
 import {
     isCandidateForKubernetesScan,
     shouldScanDocumentOnSave,
+    armForcedScan,
     forceScanForDocument,
     consumeForceScan,
     clearForcedScan,
@@ -13,6 +14,9 @@ import {
     getDocumentKey,
     isKustomizeDependency,
     isHelmDependency,
+    clearForcedScansForOwner,
+    setTimeProvider,
+    resetTimeProvider,
     ScannableDocument,
 } from '../../server/manifestFilter';
 
@@ -335,6 +339,25 @@ services:
 `,
             };
             assert.strictEqual(isCandidateForKubernetesScan(doc), false);
+        });
+
+        it('identifies Kubernetes YAML flow mappings outside Helm and Kustomize directories (Finding D)', () => {
+            const flowDoc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: '/workspace/flow-manifest.yaml' },
+                languageId: 'yaml',
+                fileName: '/workspace/flow-manifest.yaml',
+                getText: () => '{apiVersion: v1, kind: ConfigMap, metadata: {name: app}}',
+            };
+            assert.strictEqual(isCandidateForKubernetesScan(flowDoc), true, 'Valid YAML flow mapping must be recognized as scan candidate');
+
+            // Arbitrary flow mappings without apiVersion/kind must be suppressed
+            const arbitraryFlowDoc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: '/workspace/arbitrary.yaml' },
+                languageId: 'yaml',
+                fileName: '/workspace/arbitrary.yaml',
+                getText: () => '{name: app, count: 5, active: true}',
+            };
+            assert.strictEqual(isCandidateForKubernetesScan(arbitraryFlowDoc), false, 'Arbitrary YAML flow mappings must be suppressed');
         });
     });
 
@@ -795,32 +818,289 @@ data:
         });
 
         it('supports single quotes, backticks, and piped invocations for Helm .Files.Get', () => {
-            const chartDir = path.join(tempTestDir, 'helm-syntax-chart');
+            // 1. Single quotes chart
+            const singleDir = path.join(tempTestDir, 'helm-single-chart');
+            const singleTmplDir = path.join(singleDir, 'templates');
+            fs.mkdirSync(singleDir);
+            fs.mkdirSync(singleTmplDir);
+            fs.writeFileSync(path.join(singleDir, 'Chart.yaml'), 'apiVersion: v2\nname: single\nversion: 1.0.0\n');
+
+            const singleQuotePath = path.join(singleDir, 'single.json');
+            const unrefSingle = path.join(singleDir, 'unref.json');
+            fs.writeFileSync(singleQuotePath, '{}');
+            fs.writeFileSync(unrefSingle, '{}');
+            fs.writeFileSync(path.join(singleTmplDir, 'single.yaml'), "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: s\ndata:\n  v: |- {{ .Files.Get 'single.json' }}\n");
+
+            assert.strictEqual(isHelmDependency(singleQuotePath), true, 'Must support single quotes');
+            assert.strictEqual(isHelmDependency(unrefSingle), false, 'Unreferenced sibling in single quote chart must not match');
+
+            // 2. Backticks chart
+            const backtickDir = path.join(tempTestDir, 'helm-backtick-chart');
+            const backtickTmplDir = path.join(backtickDir, 'templates');
+            fs.mkdirSync(backtickDir);
+            fs.mkdirSync(backtickTmplDir);
+            fs.writeFileSync(path.join(backtickDir, 'Chart.yaml'), 'apiVersion: v2\nname: backtick\nversion: 1.0.0\n');
+
+            const backtickPath = path.join(backtickDir, 'backtick.json');
+            const unrefBacktick = path.join(backtickDir, 'unref.json');
+            fs.writeFileSync(backtickPath, '{}');
+            fs.writeFileSync(unrefBacktick, '{}');
+            fs.writeFileSync(path.join(backtickTmplDir, 'backtick.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\ndata:\n  v: |- {{ .Files.Get `backtick.json` }}\n');
+
+            assert.strictEqual(isHelmDependency(backtickPath), true, 'Must support backticks');
+            assert.strictEqual(isHelmDependency(unrefBacktick), false, 'Unreferenced sibling in backtick chart must not match');
+
+            // 3. Piped chart
+            const pipedDir = path.join(tempTestDir, 'helm-piped-chart');
+            const pipedTmplDir = path.join(pipedDir, 'templates');
+            fs.mkdirSync(pipedDir);
+            fs.mkdirSync(pipedTmplDir);
+            fs.writeFileSync(path.join(pipedDir, 'Chart.yaml'), 'apiVersion: v2\nname: piped\nversion: 1.0.0\n');
+
+            const pipedPath = path.join(pipedDir, 'piped.json');
+            fs.writeFileSync(pipedPath, '{}');
+            fs.writeFileSync(path.join(pipedTmplDir, 'piped.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: p\ndata:\n  v: |- {{ "piped.json" | .Files.Get }}\n');
+
+            assert.strictEqual(isHelmDependency(pipedPath), true, 'Must support piped .Files.Get');
+        });
+
+        it('forwards empty file referenced by Kustomize generator and suppresses unrelated empty files (Finding B1)', () => {
+            const kustomizeDir = path.join(tempTestDir, 'empty-dep-test');
+            fs.mkdirSync(kustomizeDir);
+            const emptyGenFile = path.join(kustomizeDir, 'empty-config.json');
+            fs.writeFileSync(emptyGenFile, ''); // 0 bytes
+
+            const kPath = path.join(kustomizeDir, 'kustomization.yaml');
+            fs.writeFileSync(kPath, `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+- name: gen-cm
+  files:
+  - empty-config.json
+`);
+
+            const emptyGenDoc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: emptyGenFile },
+                languageId: 'json',
+                fileName: emptyGenFile,
+                getText: () => '',
+            };
+            assert.strictEqual(shouldScanDocumentOnSave(emptyGenDoc), true, 'Empty file referenced by generator must trigger scan');
+
+            // Unrelated empty file outside Kustomize/Helm must remain suppressed
+            const unrelatedEmptyFile = path.join(tempTestDir, 'unrelated-empty.json');
+            fs.writeFileSync(unrelatedEmptyFile, '   \n  ');
+            const unrelatedEmptyDoc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: unrelatedEmptyFile },
+                languageId: 'json',
+                fileName: unrelatedEmptyFile,
+                getText: () => '   \n  ',
+            };
+            assert.strictEqual(shouldScanDocumentOnSave(unrelatedEmptyDoc), false, 'Unrelated empty file must remain suppressed');
+        });
+
+        it('enforces exact path matching and avoids suffix match collisions (Finding B2)', () => {
+            const kustomizeDir = path.join(tempTestDir, 'exact-path-kustomize');
+            const subDir = path.join(kustomizeDir, 'sub');
+            fs.mkdirSync(kustomizeDir);
+            fs.mkdirSync(subDir);
+
+            // Two files with identical basename 'config.json': root and sub
+            const rootConfig = path.join(kustomizeDir, 'config.json');
+            const subConfig = path.join(subDir, 'config.json');
+            fs.writeFileSync(rootConfig, '{"root": true}');
+            fs.writeFileSync(subConfig, '{"sub": true}');
+
+            // Kustomization references ONLY 'sub/config.json'
+            const kPath = path.join(kustomizeDir, 'kustomization.yaml');
+            fs.writeFileSync(kPath, `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+- name: sub-cm
+  files:
+  - sub/config.json
+`);
+
+            // sub/config.json must match
+            assert.strictEqual(isKustomizeDependency(subConfig), true, 'Referenced sub/config.json must match');
+
+            // root config.json must NOT match (suffix matching is prohibited)
+            assert.strictEqual(isKustomizeDependency(rootConfig), false, 'Unreferenced root config.json must NOT match sub/config.json reference');
+
+            // Also verify preservation of valid reference formats: ./config.json, config//settings.json
+            const settingsDir = path.join(kustomizeDir, 'config');
+            fs.mkdirSync(settingsDir);
+            const settingsFile = path.join(settingsDir, 'settings.json');
+            fs.writeFileSync(settingsFile, '{"settings": true}');
+
+            fs.writeFileSync(kPath, `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+- name: multi-cm
+  files:
+  - ./config.json
+  - config//settings.json
+`);
+            assert.strictEqual(isKustomizeDependency(rootConfig), true, 'Must match ./config.json normalized');
+            assert.strictEqual(isKustomizeDependency(settingsFile), true, 'Must match config//settings.json normalized');
+        });
+
+        it('invalidates Kustomize cache on content changes, same-size replacement with preserved mtime, and deletion (Finding B3)', () => {
+            const kustomizeDir = path.join(tempTestDir, 'cache-identity-kustomize');
+            fs.mkdirSync(kustomizeDir);
+
+            const fileA = path.join(kustomizeDir, 'a.json');
+            const fileB = path.join(kustomizeDir, 'b.json');
+            fs.writeFileSync(fileA, '{"a": 1}');
+            fs.writeFileSync(fileB, '{"b": 2}');
+
+            const kPath = path.join(kustomizeDir, 'kustomization.yaml');
+            // 1. Initial: references a.json
+            const contentA = 'apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nconfigMapGenerator:\n- name: cm\n  files:\n  - a.json\n';
+            fs.writeFileSync(kPath, contentA);
+
+            assert.strictEqual(isKustomizeDependency(fileA), true, 'Initial reference to a.json');
+            assert.strictEqual(isKustomizeDependency(fileB), false);
+
+            // 2. Same-size replacement: replace "a.json" with "b.json" (same byte length!) and preserve timestamp
+            const statBefore = fs.statSync(kPath);
+            const contentB = 'apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nconfigMapGenerator:\n- name: cm\n  files:\n  - b.json\n';
+            assert.strictEqual(Buffer.byteLength(contentA), Buffer.byteLength(contentB), 'Must be identical byte size');
+            fs.writeFileSync(kPath, contentB);
+            fs.utimesSync(kPath, statBefore.atime, statBefore.mtime); // Preserve exact mtime!
+
+            // Content-based identity must detect hash change despite identical mtime and size
+            assert.strictEqual(isKustomizeDependency(fileA), false, 'a.json must be invalidated despite preserved mtime');
+            assert.strictEqual(isKustomizeDependency(fileB), true, 'b.json must now be recognized as dependency');
+
+            // 3. Unchanged-content cache reuse
+            assert.strictEqual(isKustomizeDependency(fileB), true, 'Cached dependency result must be reused');
+
+            // 4. File deletion and recreation
+            fs.unlinkSync(kPath);
+            assert.strictEqual(isKustomizeDependency(fileB), false, 'Deleted kustomization.yaml must invalidate');
+            fs.writeFileSync(kPath, contentB);
+            assert.strictEqual(isKustomizeDependency(fileB), true, 'Recreated kustomization.yaml must be detected');
+        });
+
+        it('invalidates Helm template cache on content change with preserved mtime and same size (Finding C1)', () => {
+            const chartDir = path.join(tempTestDir, 'helm-content-cache-chart');
             const templatesDir = path.join(chartDir, 'templates');
             fs.mkdirSync(chartDir);
             fs.mkdirSync(templatesDir);
-            fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: syntax\nversion: 1.0.0\n');
+            fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: test\nversion: 1.0.0\n');
 
-            const singleQuotePath = path.join(chartDir, 'single.json');
-            const backtickPath = path.join(chartDir, 'backtick.json');
-            const pipedPath = path.join(chartDir, 'piped.json');
-            fs.writeFileSync(singleQuotePath, '{}');
-            fs.writeFileSync(backtickPath, '{}');
-            fs.writeFileSync(pipedPath, '{}');
+            const fileA = path.join(chartDir, 'a.json');
+            const fileB = path.join(chartDir, 'b.json');
+            fs.writeFileSync(fileA, '{"a": 1}');
+            fs.writeFileSync(fileB, '{"b": 2}');
 
-            fs.writeFileSync(path.join(templatesDir, 'template.yaml'), `apiVersion: v1
-kind: ConfigMap
+            const tmplPath = path.join(templatesDir, 'config.yaml');
+            const tmplContentA = 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  val: |- {{ .Files.Get "a.json" }}\n';
+            fs.writeFileSync(tmplPath, tmplContentA);
+
+            assert.strictEqual(isHelmDependency(fileA), true, 'Initially references a.json');
+            assert.strictEqual(isHelmDependency(fileB), false);
+
+            // Same-size replacement in template: "a.json" -> "b.json" with preserved mtime
+            const statBefore = fs.statSync(tmplPath);
+            const tmplContentB = 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  val: |- {{ .Files.Get "b.json" }}\n';
+            assert.strictEqual(Buffer.byteLength(tmplContentA), Buffer.byteLength(tmplContentB));
+            fs.writeFileSync(tmplPath, tmplContentB);
+            fs.utimesSync(tmplPath, statBefore.atime, statBefore.mtime); // Preserve exact mtime!
+
+            // Content-based template hash must invalidate chart cache
+            assert.strictEqual(isHelmDependency(fileA), false, 'a.json must be invalidated on content change with preserved mtime');
+            assert.strictEqual(isHelmDependency(fileB), true, 'b.json must be recognized');
+        });
+
+        it('recognizes Helm .Files aliases e.g. $files := .Files (Finding C2)', () => {
+            const chartDir = path.join(tempTestDir, 'helm-alias-chart');
+            const templatesDir = path.join(chartDir, 'templates');
+            fs.mkdirSync(chartDir);
+            fs.mkdirSync(templatesDir);
+            fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: alias\nversion: 1.0.0\n');
+
+            const settingsPath = path.join(chartDir, 'settings.json');
+            fs.writeFileSync(settingsPath, '{"debug": true}');
+
+            fs.writeFileSync(path.join(templatesDir, 'deployment.yaml'), `apiVersion: apps/v1
+kind: Deployment
 metadata:
-  name: syntax-cm
-data:
-  single: |- {{ .Files.Get 'single.json' }}
-  backtick: |- {{ .Files.Get \`backtick.json\` }}
-  piped: |- {{ "piped.json" | .Files.Get }}
+  name: app
+spec:
+  template:
+    spec:
+      containers:
+      - name: web
+        image: nginx
+        env:
+        - name: CFG
+          value: |-
+            {{ $files := .Files }}
+            {{ $files.Get "settings.json" }}
 `);
 
-            assert.strictEqual(isHelmDependency(singleQuotePath), true, 'Must support single quotes');
-            assert.strictEqual(isHelmDependency(backtickPath), true, 'Must support backticks');
-            assert.strictEqual(isHelmDependency(pipedPath), true, 'Must support piped .Files.Get');
+            assert.strictEqual(isHelmDependency(settingsPath), true, 'Must recognize .Files alias $files.Get');
+        });
+
+        it('treats chart as uncertain when template cannot be read without caching negative result (Finding C3)', () => {
+            const chartDir = path.join(tempTestDir, 'helm-err-chart');
+            const templatesDir = path.join(chartDir, 'templates');
+            fs.mkdirSync(chartDir);
+            fs.mkdirSync(templatesDir);
+            fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: err\nversion: 1.0.0\n');
+
+            const targetJson = path.join(chartDir, 'data.json');
+            fs.writeFileSync(targetJson, '{"key": "val"}');
+
+            // Create an unreadable template file (000 permissions on POSIX)
+            const unreadableTmpl = path.join(templatesDir, 'broken.yaml');
+            fs.writeFileSync(unreadableTmpl, 'some template content');
+            try {
+                fs.chmodSync(unreadableTmpl, 0o000);
+            } catch {
+                // If chmod is not supported, pass
+            }
+
+            try {
+                // When template reading fails, chart is treated as uncertain -> returns true without persistent negative cache
+                const result = isHelmDependency(targetJson);
+                assert.strictEqual(result, true, 'Uncertain chart with read errors must forward save');
+            } finally {
+                try {
+                    fs.chmodSync(unreadableTmpl, 0o644);
+                } catch {
+                    // Cleanup
+                }
+            }
+        });
+
+        it('resolves Helm .Files.Get strictly chart-relative without basename fallback (Finding C4)', () => {
+            const chartDir = path.join(tempTestDir, 'helm-literal-matching-chart');
+            const templatesDir = path.join(chartDir, 'templates');
+            const toolsDir = path.join(chartDir, 'tools');
+            fs.mkdirSync(chartDir);
+            fs.mkdirSync(templatesDir);
+            fs.mkdirSync(toolsDir);
+            fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: match\nversion: 1.0.0\n');
+
+            const rootConfig = path.join(chartDir, 'config.json');
+            const toolsConfig = path.join(toolsDir, 'config.json');
+            fs.writeFileSync(rootConfig, '{"root": true}');
+            fs.writeFileSync(toolsConfig, '{"tools": true}');
+
+            // Template strictly requests chart-relative root "config.json"
+            fs.writeFileSync(path.join(templatesDir, 'configmap.yaml'), `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-cm
+data:
+  config: |- {{ .Files.Get "config.json" }}
+`);
+
+            assert.strictEqual(isHelmDependency(rootConfig), true, 'Exact chart-relative config.json must match');
+            assert.strictEqual(isHelmDependency(toolsConfig), false, 'tools/config.json must NOT match root config.json literal');
         });
 
         it('safely handles non-existent or inaccessible file paths without throwing', () => {
@@ -879,25 +1159,148 @@ data:
             assert.strictEqual(shouldScanDocumentOnSave(doc), false);
         });
 
-        it('expires forced scan override after timeout to prevent permanent leaks', (done) => {
-            const doc: ScannableDocument = {
-                uri: { scheme: 'file', fsPath: '/workspace/expired.yaml' },
+        it('expires forced scan override after timeout using controlled clock (Finding G)', () => {
+            let mockTime = 100000;
+            setTimeProvider(() => mockTime);
+            try {
+                // Assertion 1: Consumption before expiration
+                const doc1: ScannableDocument = {
+                    uri: { scheme: 'file', fsPath: '/workspace/valid-override.yaml' },
+                    languageId: 'yaml',
+                    fileName: '/workspace/valid-override.yaml',
+                    getText: () => 'tool: custom',
+                };
+                forceScanForDocument(doc1, undefined, 5000);
+                assert.strictEqual(isScanForcedForDocument(doc1), true);
+
+                // Advance clock within timeout window: consumption succeeds
+                mockTime += 2000;
+                assert.strictEqual(consumeForceScan(doc1), true, 'Override must be consumable before expiration');
+                assert.strictEqual(consumeForceScan(doc1), false, 'Override must be consumed strictly once');
+
+                // Assertion 2: Fresh independent override expires after timeout
+                const doc2: ScannableDocument = {
+                    uri: { scheme: 'file', fsPath: '/workspace/expired-override.yaml' },
+                    languageId: 'yaml',
+                    fileName: '/workspace/expired-override.yaml',
+                    getText: () => 'tool: custom2',
+                };
+                forceScanForDocument(doc2, undefined, 5000);
+                assert.strictEqual(isScanForcedForDocument(doc2), true);
+
+                // Advance clock beyond timeout window
+                mockTime += 6000;
+                // Verify rejection after expiration WITHOUT calling resetForceScanState
+                assert.strictEqual(isScanForcedForDocument(doc2), false, 'Override must be expired');
+                assert.strictEqual(consumeForceScan(doc2), false, 'Expired override must not be consumable');
+                assert.strictEqual(shouldScanDocumentOnSave(doc2), false, 'Expired document must not trigger scan');
+            } finally {
+                resetTimeProvider();
+            }
+        });
+
+        it('clears pending forced scans for retiring client without clearing a new client active attempt (Finding A2)', () => {
+            const retiringClientId = 'client_retiring_123';
+            const newClientId = 'client_active_456';
+
+            const retiringDoc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: '/workspace/retiring.yaml' },
                 languageId: 'yaml',
-                fileName: '/workspace/expired.yaml',
-                getText: () => 'tool: custom',
+                fileName: '/workspace/retiring.yaml',
+                getText: () => 'custom: retiring',
             };
 
-            forceScanForDocument(doc);
-            assert.strictEqual(isScanForcedForDocument(doc), true);
+            const newClientDoc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: '/workspace/new-client.yaml' },
+                languageId: 'yaml',
+                fileName: '/workspace/new-client.yaml',
+                getText: () => 'custom: new',
+            };
 
-            // Simulate expired timestamp
-            // forcedScanUris is private, but we can verify consumeForceScan honors expiry
-            setTimeout(() => {
-                // If reset is called or expiry reached, it safely clears
-                resetForceScanState();
-                assert.strictEqual(consumeForceScan(doc), false);
-                done();
-            }, 10);
+            forceScanForDocument(retiringDoc, retiringClientId);
+            forceScanForDocument(newClientDoc, newClientId);
+
+            assert.strictEqual(isScanForcedForDocument(retiringDoc, retiringClientId), true);
+            assert.strictEqual(isScanForcedForDocument(newClientDoc, newClientId), true);
+
+            // Retiring client stops/restarts and clears only its own forced scan state
+            clearForcedScansForOwner(retiringClientId);
+
+            // Retiring client attempt is purged
+            assert.strictEqual(isScanForcedForDocument(retiringDoc, retiringClientId), false);
+            assert.strictEqual(consumeForceScan(retiringDoc, retiringClientId), false);
+
+            // New client attempt remains completely intact
+            assert.strictEqual(isScanForcedForDocument(newClientDoc, newClientId), true);
+            assert.strictEqual(consumeForceScan(newClientDoc, newClientId), true);
+        });
+
+        it('ensures an active manual save attempt cannot expire after 60s while still active, and cleans up when ended without didSave (Finding A3)', () => {
+            let mockTime = 50000;
+            setTimeProvider(() => mockTime);
+            try {
+                const doc: ScannableDocument = {
+                    uri: { scheme: 'file', fsPath: '/workspace/slow-active-save.yaml' },
+                    languageId: 'yaml',
+                    fileName: '/workspace/slow-active-save.yaml',
+                    getText: () => 'tool: custom',
+                };
+
+                // 1. Arm an active save attempt (managed attempt)
+                const attempt = armForcedScan(doc);
+                assert.strictEqual(attempt.isActive, true);
+                assert.strictEqual(isScanForcedForDocument(doc), true);
+
+                // 2. Advance clock by 120 seconds (far beyond the 60s timeout) while save attempt is still active
+                mockTime += 120000;
+
+                // 3. Since the attempt is still active, elapsed time alone MUST NOT invalidate it
+                assert.strictEqual(isScanForcedForDocument(doc), true, 'Active attempt must not expire merely due to elapsed time');
+
+                // 4. A matching didSave arrives and successfully consumes the active override
+                assert.strictEqual(shouldScanDocumentOnSave(doc), true, 'didSave must be forwarded for active attempt even after 120s');
+                assert.strictEqual(attempt.isConsumed, true);
+                assert.strictEqual(attempt.isActive, false);
+
+                // 5. Override was consumed exactly once; subsequent ordinary save is not forced
+                assert.strictEqual(shouldScanDocumentOnSave(doc), false, 'Subsequent ordinary save must not be forced');
+
+                // 6. Test cleanup after an attempt ends without didSave (e.g. read-only file or user cancel)
+                const failedDoc: ScannableDocument = {
+                    uri: { scheme: 'file', fsPath: '/workspace/failed-save.yaml' },
+                    languageId: 'yaml',
+                    fileName: '/workspace/failed-save.yaml',
+                    getText: () => 'tool: custom',
+                };
+                const failedAttempt = armForcedScan(failedDoc);
+                assert.strictEqual(failedAttempt.isActive, true);
+                assert.strictEqual(isScanForcedForDocument(failedDoc), true);
+
+                // Simulate save attempt ending without didSave
+                failedAttempt.revoke();
+                failedAttempt.complete();
+
+                // Attempt must be immediately cleaned up and inactive
+                assert.strictEqual(failedAttempt.isActive, false);
+                assert.strictEqual(isScanForcedForDocument(failedDoc), false);
+                assert.strictEqual(shouldScanDocumentOnSave(failedDoc), false, 'Subsequent ordinary save must never consume ended attempt');
+
+                // 7. Verify an abandoned unmanaged attempt expires after the timeout and does not remain armed indefinitely
+                const abandonedDoc: ScannableDocument = {
+                    uri: { scheme: 'file', fsPath: '/workspace/abandoned.yaml' },
+                    languageId: 'yaml',
+                    fileName: '/workspace/abandoned.yaml',
+                    getText: () => 'tool: custom',
+                };
+                forceScanForDocument(abandonedDoc, undefined, 60000);
+                assert.strictEqual(isScanForcedForDocument(abandonedDoc), true);
+
+                mockTime += 70000; // Past 60s abandoned timeout
+                assert.strictEqual(isScanForcedForDocument(abandonedDoc), false, 'Abandoned attempt must expire and not remain armed indefinitely');
+                assert.strictEqual(consumeForceScan(abandonedDoc), false, 'Expired abandoned attempt must not be consumed');
+            } finally {
+                resetTimeProvider();
+            }
         });
 
         it('immediately revokes forced scan override via clearForcedScan if save operation fails or cancels', () => {

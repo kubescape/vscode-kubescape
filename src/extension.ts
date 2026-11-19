@@ -4,7 +4,12 @@ import { configuredExecutablePath } from './server/configuredPath';
 import { KubescapeLanguageClientManager } from './server/client';
 import { ServerLifecycleCoordinator } from './server/coordinator';
 import { saveToTriggerScan } from './scanYaml';
-import { forceScanForDocument, clearForcedScan, resetForceScanState } from './server/manifestFilter';
+import {
+    armForcedScan,
+    forceScanForDocument,
+    clearForcedScan,
+    resetForceScanState
+} from './server/manifestFilter';
 
 let clientManager: KubescapeLanguageClientManager | null = null;
 let coordinator: ServerLifecycleCoordinator | null = null;
@@ -76,15 +81,21 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
             const activeEditor = vscode.window.activeTextEditor;
             if (activeEditor) {
                 outputChannel?.appendLine(`[Command] Saving active document to trigger scan: ${activeEditor.document.fileName}`);
-                const overrideKey = forceScanForDocument(activeEditor.document);
+                const attempt = armForcedScan(activeEditor.document, clientManager?.getInstanceId());
                 try {
-                    const saved = await saveToTriggerScan(activeEditor.document, (command) => vscode.commands.executeCommand(command));
+                    const saved = await saveToTriggerScan(
+                        activeEditor.document,
+                        (command) => vscode.commands.executeCommand(command),
+                        vscode.workspace.onDidSaveTextDocument
+                    );
                     if (!saved) {
-                        clearForcedScan(overrideKey);
+                        attempt.revoke();
                     }
                 } catch (err: any) {
-                    clearForcedScan(overrideKey);
+                    attempt.revoke();
                     throw err;
+                } finally {
+                    attempt.complete();
                 }
             } else {
                 vscode.window.showInformationMessage('No active document to scan. Open a Kubernetes YAML manifest and save it.');
