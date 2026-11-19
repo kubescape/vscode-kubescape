@@ -4,7 +4,11 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { LifecycleController, ILifecycleClient } from '../../server/queue';
+import {
+    LifecycleController,
+    ILifecycleClient,
+    createServerOptions
+} from '../../server/queue';
 import {
     isProcessAlive,
     waitForProcessExit,
@@ -18,6 +22,15 @@ function encodeFrame(msg: any): Buffer {
 }
 
 const activeTestClients: Set<LspTestClient> = new Set();
+const activeChildProcesses: Set<cp.ChildProcess> = new Set();
+
+function trackChildProcess(proc: cp.ChildProcess): cp.ChildProcess {
+    activeChildProcesses.add(proc);
+    proc.on('exit', () => {
+        activeChildProcesses.delete(proc);
+    });
+    return proc;
+}
 
 class LspTestClient {
     public readonly proc: cp.ChildProcess;
@@ -30,6 +43,7 @@ class LspTestClient {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, ...env },
         });
+        trackChildProcess(this.proc);
 
         activeTestClients.add(this);
         this.proc.on('exit', () => {
@@ -153,7 +167,7 @@ describe('LSP Lifecycle & Protocol Tests', () => {
     });
 
     afterEach(async () => {
-        // Finding 10: Clean up every active mock child process
+        // Clean up every active mock child process
         for (const client of activeTestClients) {
             try {
                 await client.terminate(2000);
@@ -162,6 +176,17 @@ describe('LSP Lifecycle & Protocol Tests', () => {
             }
         }
         activeTestClients.clear();
+
+        for (const proc of activeChildProcesses) {
+            try {
+                if (proc.pid && isProcessAlive(proc.pid)) {
+                    await terminateProcess(proc, 2000);
+                }
+            } catch {
+                // Ignored
+            }
+        }
+        activeChildProcesses.clear();
 
         try {
             await fs.promises.rm(tmpDir, { recursive: true, force: true });
@@ -429,10 +454,12 @@ describe('LifecycleController Lifecycle & Safeguards (Findings 4, 6, 7)', functi
 
         const clientManager = new LifecycleController<any>(
             () => {
-                const proc = cp.spawn(process.execPath, [mockServerPath], {
-                    stdio: ['pipe', 'pipe', 'pipe'],
-                    env: { ...process.env, MOCK_LSP_HANG_ON_INIT: '1' },
-                });
+                const proc = trackChildProcess(
+                    cp.spawn(process.execPath, [mockServerPath], {
+                        stdio: ['pipe', 'pipe', 'pipe'],
+                        env: { ...process.env, MOCK_LSP_HANG_ON_INIT: '1' },
+                    })
+                );
                 spawnedProc = proc;
 
                 return {
@@ -714,5 +741,175 @@ describe('Language Client Lifecycle Controller & Queue Tests', () => {
 
         manager.dispose();
         assert.strictEqual(createdClients[createdClients.length - 1].state, 1);
+    });
+
+    it('shares idempotent in-flight stop promise', async () => {
+        let stopCalls = 0;
+        const manager = new LifecycleController<any>(() => {
+            return {
+                state: 3,
+                start: async () => {},
+                stop: async () => {
+                    stopCalls++;
+                    await new Promise((r) => setTimeout(r, 20));
+                },
+                dispose: async () => {},
+            };
+        });
+
+        await manager.start('/bin/p1');
+        const p1 = manager.stop();
+        const p2 = manager.stop();
+        assert.strictEqual(p1, p2, 'Concurrent stop calls must share the same in-flight promise');
+        await Promise.all([p1, p2]);
+        assert.strictEqual(stopCalls, 1, 'Underlying client stop must only be called once');
+    });
+
+    it('cleans up and stops client if disposed during initialization', async () => {
+        let stopCalled = false;
+        let disposeCalled = false;
+
+        const controller = new LifecycleController<any>(
+            () => {
+                return {
+                    state: 2,
+                    start: async () => {
+                        await new Promise((r) => setTimeout(r, 40));
+                    },
+                    stop: async () => {
+                        stopCalled = true;
+                    },
+                    dispose: async () => {
+                        disposeCalled = true;
+                    },
+                };
+            },
+            { initTimeoutMs: 5000 }
+        );
+
+        const startPromise = controller.start('/bin/kubescape');
+        setTimeout(() => controller.dispose(), 10);
+
+        await startPromise;
+
+        assert.strictEqual(
+            stopCalled || disposeCalled,
+            true,
+            'Client must be stopped/disposed when controller is disposed during start'
+        );
+        assert.strictEqual(controller.getClient(), null);
+    });
+
+    it('preserves process reference and rejects replacement when process termination fails on timeout', async () => {
+        let replacementStarted = false;
+        const stubbornProc: any = {
+            pid: 888888,
+            exitCode: null,
+            kill: () => {},
+            once: () => {},
+            removeListener: () => {},
+        };
+
+        const controller = new LifecycleController<any>(
+            (exe: string) => {
+                if (exe === '/bin/kubescape-replacement') {
+                    replacementStarted = true;
+                    return {
+                        state: 3,
+                        _serverProcess: null,
+                        start: async () => {},
+                        stop: async () => {},
+                        dispose: async () => {},
+                    };
+                }
+                return {
+                    state: 2,
+                    _serverProcess: stubbornProc,
+                    start: () => new Promise<never>(() => {}),
+                    stop: async () => {},
+                    dispose: async () => {},
+                };
+            },
+            { initTimeoutMs: 50, stopTimeoutMs: 50 }
+        );
+
+        const origKill = process.kill;
+        try {
+            (process as any).kill = (pid: number, signal?: any) => {
+                if (pid === 888888) {
+                    return true;
+                }
+                return origKill(pid, signal);
+            };
+
+            await assert.rejects(
+                () => controller.start('/bin/kubescape-stalled'),
+                /initialization timed out .* and the process .* failed to terminate/
+            );
+
+            assert.strictEqual(controller.getCurrentProcess(), stubbornProc);
+
+            await assert.rejects(
+                () => controller.restart('/bin/kubescape-replacement'),
+                /Failed to terminate Kubescape Language Server process/
+            );
+
+            assert.strictEqual(replacementStarted, false, 'Replacement must not start while stubborn process is alive');
+        } finally {
+            process.kill = origKill;
+        }
+
+        stubbornProc.exitCode = 0;
+        await controller.restart('/bin/kubescape-replacement');
+        assert.strictEqual(replacementStarted, true, 'Restart should succeed once previous process exits');
+        await controller.stop();
+    });
+});
+
+describe('Process Alive Probing and Launch Arguments (Findings 1 & 2)', () => {
+    it('isProcessAlive returns true for current process PID synchronously', () => {
+        const alive = isProcessAlive(process.pid);
+        assert.strictEqual(alive, true);
+    });
+
+    it('isProcessAlive returns false when ESRCH confirms process does not exist', () => {
+        const origKill = process.kill;
+        try {
+            (process as any).kill = () => {
+                const err: any = new Error('ESRCH');
+                err.code = 'ESRCH';
+                throw err;
+            };
+            const alive = isProcessAlive(999999);
+            assert.strictEqual(alive, false);
+        } finally {
+            process.kill = origKill;
+        }
+    });
+
+    it('isProcessAlive returns true when error is not ESRCH (e.g. EPERM indicates process exists)', () => {
+        const origKill = process.kill;
+        try {
+            (process as any).kill = () => {
+                const err: any = new Error('EPERM');
+                err.code = 'EPERM';
+                throw err;
+            };
+            const alive = isProcessAlive(1);
+            assert.strictEqual(alive, true);
+        } finally {
+            process.kill = origKill;
+        }
+    });
+
+    it('createServerOptions generates stdio launch arguments without --stdio flag (Finding 1)', () => {
+        const options: any = createServerOptions('/usr/local/bin/kubescape');
+        assert.strictEqual(options.command, '/usr/local/bin/kubescape');
+        assert.deepStrictEqual(options.args, ['lsp']);
+        assert.strictEqual(
+            options.transport,
+            undefined,
+            'transport must not be set to TransportKind.stdio to prevent vscode-languageclient appending --stdio'
+        );
     });
 });

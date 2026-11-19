@@ -4,13 +4,12 @@ import {
     LanguageClient,
     LanguageClientOptions,
     ServerOptions,
-    TransportKind,
     State
 } from 'vscode-languageclient/node';
-import { LifecycleQueue } from './queue';
+import { LifecycleQueue, RestartResult, createServerOptions } from './queue';
 import { waitForProcessExit, terminateProcess, isProcessAlive } from './process';
 
-export { waitForProcessExit, terminateProcess, isProcessAlive };
+export { waitForProcessExit, terminateProcess, isProcessAlive, RestartResult, createServerOptions };
 
 export type LanguageClientFactory = (
     id: string,
@@ -47,6 +46,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
     private initTimeoutMs: number;
     private stopTimeoutMs: number;
     private isDisposed: boolean = false;
+    private shutdownPromise: Promise<void> | null = null;
 
     constructor(
         outputChannel: vscode.OutputChannel,
@@ -79,6 +79,10 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         return this.currentExecutablePath;
     }
 
+    public getCurrentProcess(): cp.ChildProcess | null {
+        return this.currentProcess;
+    }
+
     public getIsDisposed(): boolean {
         return this.isDisposed;
     }
@@ -94,43 +98,64 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
     }
 
     /**
-     * Public serialized stop operation.
+     * Public serialized stop operation. Shares an idempotent in-flight promise.
      */
-    public async stop(): Promise<void> {
-        return this.queue.enqueue(() => this.internalStop());
+    public stop(): Promise<void> {
+        if (this.shutdownPromise) {
+            return this.shutdownPromise;
+        }
+        if (this.isDisposed && !this.client && !this.currentProcess) {
+            return Promise.resolve();
+        }
+        this.shutdownPromise = this.queue
+            .enqueue(() => this.internalStop())
+            .finally(() => {
+                this.shutdownPromise = null;
+            });
+        return this.shutdownPromise;
     }
 
     /**
      * Public serialized restart operation.
      */
-    public async restart(executablePath: string): Promise<void> {
+    public async restart(
+        executablePath: string,
+        checkGeneration?: () => boolean
+    ): Promise<RestartResult> {
         if (this.isDisposed) {
             throw new Error('Cannot restart Kubescape Language Server: Client manager has been disposed.');
         }
-        return this.queue.enqueue(() => this.internalRestart(executablePath));
+        return this.queue.enqueue(() => this.internalRestart(executablePath, checkGeneration));
     }
 
-    private async internalRestart(executablePath: string): Promise<void> {
-        if (this.isDisposed) {
-            this.outputChannel.appendLine('[LSP] Aborting restart: client manager is disposed.');
-            return;
+    private async internalRestart(
+        executablePath: string,
+        checkGeneration?: () => boolean
+    ): Promise<RestartResult> {
+        if (this.isDisposed || (checkGeneration && !checkGeneration())) {
+            this.outputChannel.appendLine('[LSP] Aborting restart: superseded or client manager is disposed.');
+            return 'superseded';
         }
 
         this.outputChannel.appendLine('[LSP] Restarting Kubescape Language Server...');
         await this.internalStop();
 
-        // Re-check disposed state after stop completes
-        if (this.isDisposed) {
-            this.outputChannel.appendLine('[LSP] Aborting restart: client manager was disposed during stop.');
-            return;
+        // Re-check disposed and generation state after stop completes
+        if (this.isDisposed || (checkGeneration && !checkGeneration())) {
+            this.outputChannel.appendLine('[LSP] Aborting restart: superseded or client manager was disposed during stop.');
+            return 'superseded';
         }
 
-        await this.internalStart(executablePath);
+        await this.internalStart(executablePath, checkGeneration);
+        return 'restarted';
     }
 
-    private async internalStart(executablePath: string): Promise<void> {
-        if (this.isDisposed) {
-            this.outputChannel.appendLine('[LSP] Cannot start: client manager is disposed.');
+    private async internalStart(
+        executablePath: string,
+        checkGeneration?: () => boolean
+    ): Promise<void> {
+        if (this.isDisposed || (checkGeneration && !checkGeneration())) {
+            this.outputChannel.appendLine('[LSP] Cannot start: superseded or client manager is disposed.');
             return;
         }
 
@@ -144,21 +169,14 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         }
 
         // Re-check disposed state after stop
-        if (this.isDisposed) {
-            this.outputChannel.appendLine('[LSP] Cannot start: client manager was disposed during stop.');
+        if (this.isDisposed || (checkGeneration && !checkGeneration())) {
+            this.outputChannel.appendLine('[LSP] Cannot start: superseded or client manager was disposed during stop.');
             return;
         }
 
         this.outputChannel.appendLine(`[LSP] Launching Kubescape Language Server: ${executablePath} lsp`);
 
-        const serverOptions: ServerOptions = {
-            command: executablePath,
-            args: ['lsp'],
-            transport: TransportKind.stdio,
-            options: {
-                env: { ...process.env },
-            },
-        };
+        const serverOptions = createServerOptions(executablePath);
 
         const clientOptions: LanguageClientOptions = {
             documentSelector: [
@@ -207,6 +225,16 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         try {
             await Promise.race([startPromise, timeoutPromise]);
             this.currentProcess = getChildProcess(client);
+
+            // Re-check disposal state after startup settles
+            if (this.isDisposed || (checkGeneration && !checkGeneration())) {
+                this.outputChannel.appendLine(
+                    '[LSP] Client manager was disposed or superseded during startup. Stopping server...'
+                );
+                await this.internalStop();
+                return;
+            }
+
             this.outputChannel.appendLine('[LSP] Kubescape Language Server successfully started.');
         } catch (err: any) {
             if (didTimeout || err?.message === 'INITIALIZATION_TIMEOUT') {
@@ -215,8 +243,9 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
                 );
 
                 const proc = getChildProcess(client) || this.currentProcess;
+                let terminated = true;
                 if (proc) {
-                    await terminateProcess(proc, 3000);
+                    terminated = await terminateProcess(proc, Math.max(200, this.stopTimeoutMs));
                 }
 
                 startPromise.catch(() => {});
@@ -225,6 +254,16 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
                     await client.dispose();
                 } catch {
                     // Ignore dispose failure on timed-out client
+                }
+
+                if (!terminated && proc && proc.pid) {
+                    this.currentProcess = proc;
+                    this.client = null;
+                    this.currentExecutablePath = null;
+                    throw new Error(
+                        `Kubescape Language Server initialization timed out after ${this.initTimeoutMs}ms, ` +
+                        `and the process (PID ${proc.pid}) failed to terminate. Cannot safely start or replace the server while the process remains alive.`
+                    );
                 }
 
                 this.client = null;
@@ -239,8 +278,25 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             this.outputChannel.appendLine(`[LSP] Failed to start language server: ${err?.message || err}`);
 
             const proc = getChildProcess(client) || this.currentProcess;
+            let terminated = true;
             if (proc) {
-                await terminateProcess(proc, 2000);
+                terminated = await terminateProcess(proc, Math.max(200, this.stopTimeoutMs));
+            }
+
+            try {
+                await client.dispose();
+            } catch {
+                // Ignore dispose failure
+            }
+
+            if (!terminated && proc && proc.pid) {
+                this.currentProcess = proc;
+                this.client = null;
+                this.currentExecutablePath = null;
+                throw new Error(
+                    `Failed to start language server (${err?.message || err}), ` +
+                    `and the process (PID ${proc.pid}) failed to terminate. Cannot safely start or replace the server while the process remains alive.`
+                );
             }
 
             this.client = null;
@@ -286,7 +342,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
                 this.outputChannel.appendLine(
                     `[LSP] Process PID ${proc.pid} did not exit after shutdown signal. Forcing termination...`
                 );
-                const forceExited = await terminateProcess(proc, 3000);
+                const forceExited = await terminateProcess(proc, Math.max(200, this.stopTimeoutMs));
                 if (!forceExited) {
                     this.currentProcess = proc;
                     throw new Error(
@@ -307,9 +363,15 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             return;
         }
         this.isDisposed = true;
-        this.queue.dispose();
-        void this.internalStop().catch((err) => {
-            this.outputChannel.appendLine(`[LSP Error] Error during disposal: ${err?.message || err}`);
-        });
+        if (this.shutdownPromise) {
+            void this.shutdownPromise.finally(() => {
+                this.queue.dispose();
+            });
+        } else {
+            this.queue.dispose();
+            void this.internalStop().catch((err) => {
+                this.outputChannel.appendLine(`[LSP Error] Error during disposal: ${err?.message || err}`);
+            });
+        }
     }
 }

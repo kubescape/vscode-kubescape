@@ -1,3 +1,7 @@
+import { RestartResult } from './queue';
+
+export { RestartResult };
+
 export interface IOutputChannel {
     appendLine(value: string): void;
 }
@@ -9,10 +13,12 @@ export interface IDisposable {
 export interface ILanguageClientManager {
     isRunning(): boolean;
     getCurrentExecutablePath(): string | null;
-    restart(executablePath: string): Promise<void>;
+    restart(executablePath: string, checkGeneration?: () => boolean): Promise<RestartResult>;
 }
 
 export type ExecutableResolver = () => Promise<string>;
+
+export type WorkspaceFoldersProvider = () => string[];
 
 /**
  * Coordinates executable discovery and language server lifecycle transitions.
@@ -26,15 +32,19 @@ export class ServerLifecycleCoordinator implements IDisposable {
     private clientManager: ILanguageClientManager;
     private outputChannel: IOutputChannel;
     private resolver: ExecutableResolver;
+    private getWorkspaceFolders?: WorkspaceFoldersProvider;
+    private lastAppliedWorkspaceFolders: string[] = [];
 
     constructor(
         clientManager: ILanguageClientManager,
         outputChannel: IOutputChannel,
-        resolver: ExecutableResolver
+        resolver: ExecutableResolver,
+        getWorkspaceFolders?: WorkspaceFoldersProvider
     ) {
         this.clientManager = clientManager;
         this.outputChannel = outputChannel;
         this.resolver = resolver;
+        this.getWorkspaceFolders = getWorkspaceFolders;
     }
 
     public getGeneration(): number {
@@ -45,13 +55,26 @@ export class ServerLifecycleCoordinator implements IDisposable {
         return this.isDisposed;
     }
 
+    public getLastAppliedWorkspaceFolders(): string[] {
+        return [...this.lastAppliedWorkspaceFolders];
+    }
+
+    private areFolderListsEqual(a: string[], b: string[]): boolean {
+        if (a.length !== b.length) {
+            return false;
+        }
+        const sortedA = [...a].sort();
+        const sortedB = [...b].sort();
+        return sortedA.every((val, idx) => val === sortedB[idx]);
+    }
+
     /**
      * Triggers a serialized startup or restart with a monotonically increasing generation token.
      * If another request arrives while discovery is in-flight, this request is discarded.
      */
-    public async triggerRestart(reason: string): Promise<void> {
+    public async triggerRestart(reason: string): Promise<RestartResult> {
         if (this.isDisposed) {
-            return;
+            return 'superseded';
         }
 
         const requestGen = ++this.currentGeneration;
@@ -67,7 +90,7 @@ export class ServerLifecycleCoordinator implements IDisposable {
                 this.outputChannel.appendLine(
                     `[LSP Coordinator] Suppressing discovery error for superseded generation ${requestGen} (current: ${this.currentGeneration}).`
                 );
-                return;
+                return 'superseded';
             }
             throw err;
         }
@@ -77,27 +100,39 @@ export class ServerLifecycleCoordinator implements IDisposable {
             this.outputChannel.appendLine(
                 `[LSP Coordinator] Discarding stale discovery result "${exePath}" for generation ${requestGen} (current: ${this.currentGeneration}, disposed: ${this.isDisposed}).`
             );
-            return;
+            return 'superseded';
         }
 
-        // Avoid redundant restarts when target executable is already running (unless manual)
+        const currentFolders = this.getWorkspaceFolders ? this.getWorkspaceFolders() : [];
+        const foldersChanged = !this.areFolderListsEqual(currentFolders, this.lastAppliedWorkspaceFolders);
+
+        // Avoid redundant restarts when target executable is already running (unless manual, workspace, or folders changed)
         if (
             this.clientManager.isRunning() &&
             this.clientManager.getCurrentExecutablePath() === exePath &&
-            reason !== 'manual'
+            reason !== 'manual' &&
+            reason !== 'workspace' &&
+            !foldersChanged
         ) {
             this.outputChannel.appendLine(
                 `[LSP Coordinator] Server is already running with target executable "${exePath}". Skipping restart.`
             );
-            return;
+            return 'unchanged';
         }
 
         // Check generation again immediately before acting
         if (this.isDisposed || requestGen !== this.currentGeneration) {
-            return;
+            return 'superseded';
         }
 
-        await this.clientManager.restart(exePath);
+        const result = await this.clientManager.restart(
+            exePath,
+            () => !this.isDisposed && requestGen === this.currentGeneration
+        );
+        if (result === 'restarted') {
+            this.lastAppliedWorkspaceFolders = [...currentFolders];
+        }
+        return result;
     }
 
     public dispose(): void {

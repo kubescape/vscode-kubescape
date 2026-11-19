@@ -40,7 +40,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
     clientManager = new KubescapeLanguageClientManager(outputChannel);
     context.subscriptions.push(clientManager);
 
-    coordinator = new ServerLifecycleCoordinator(clientManager, outputChannel, getResolvedExecutable);
+    const getWorkspaceFolders = (): string[] =>
+        vscode.workspace.workspaceFolders?.map((wf) => wf.uri.fsPath) || [];
+
+    coordinator = new ServerLifecycleCoordinator(
+        clientManager,
+        outputChannel,
+        getResolvedExecutable,
+        getWorkspaceFolders
+    );
     context.subscriptions.push(coordinator);
 
     // Register user commands
@@ -48,8 +56,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<Kubesc
         vscode.commands.registerCommand('kubescape.restartServer', async () => {
             outputChannel?.appendLine('[Command] Manual restart requested.');
             try {
-                await coordinator?.triggerRestart('manual');
-                vscode.window.showInformationMessage('Kubescape Language Server restarted.');
+                const result = await coordinator?.triggerRestart('manual');
+                if (result === 'restarted') {
+                    vscode.window.showInformationMessage('Kubescape Language Server restarted.');
+                }
             } catch (err: any) {
                 const msg = err?.message || String(err);
                 outputChannel?.appendLine(`[Error] Restart failed: ${msg}`);
@@ -141,7 +151,11 @@ export async function deactivate(): Promise<void> {
     }
     if (clientManager) {
         outputChannel?.appendLine('[Extension] Deactivating Kubescape extension...');
-        await clientManager.stop();
+        try {
+            await clientManager.stop();
+        } catch (err: any) {
+            outputChannel?.appendLine(`[Extension Error] Error during deactivation stop: ${err?.message || err}`);
+        }
         clientManager = null;
     }
 }

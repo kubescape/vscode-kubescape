@@ -37,6 +37,7 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
                 restartCalls.push(exePath);
                 running = true;
                 currentExe = exePath;
+                return 'restarted' as const;
             },
         };
     });
@@ -113,13 +114,71 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
         const resolver = async () => '/usr/local/bin/kubescape';
         const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
 
-        // Non-manual trigger (e.g. config or workspace)
-        await coordinator.triggerRestart('config');
+        // Non-manual trigger (e.g. config) with unchanged executable
+        const resultConfig = await coordinator.triggerRestart('config');
+        assert.strictEqual(resultConfig, 'unchanged');
         assert.deepStrictEqual(restartCalls, [], 'Should not restart if target executable is already running');
 
         // Manual trigger ALWAYS restarts
-        await coordinator.triggerRestart('manual');
+        const resultManual = await coordinator.triggerRestart('manual');
+        assert.strictEqual(resultManual, 'restarted');
         assert.deepStrictEqual(restartCalls, ['/usr/local/bin/kubescape'], 'Manual trigger must force restart');
+    });
+
+    it('always restarts on workspace reason even if executable is unchanged', async () => {
+        running = true;
+        currentExe = '/usr/local/bin/kubescape';
+
+        const resolver = async () => '/usr/local/bin/kubescape';
+        const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
+
+        const result = await coordinator.triggerRestart('workspace');
+        assert.strictEqual(result, 'restarted');
+        assert.deepStrictEqual(restartCalls, ['/usr/local/bin/kubescape']);
+    });
+
+    it('restarts on config trigger if workspace folders have changed', async () => {
+        running = true;
+        currentExe = '/usr/local/bin/kubescape';
+
+        let folders = ['/workspace/a'];
+        const resolver = async () => '/usr/local/bin/kubescape';
+        const coordinator = new ServerLifecycleCoordinator(
+            mockClientManager,
+            mockOutputChannel,
+            resolver,
+            () => folders
+        );
+
+        // Initial restart syncs folders
+        const initResult = await coordinator.triggerRestart('workspace');
+        assert.strictEqual(initResult, 'restarted');
+        assert.deepStrictEqual(coordinator.getLastAppliedWorkspaceFolders(), ['/workspace/a']);
+        restartCalls = [];
+
+        // Second config trigger with same folders skips restart
+        const skipResult = await coordinator.triggerRestart('config');
+        assert.strictEqual(skipResult, 'unchanged');
+        assert.deepStrictEqual(restartCalls, []);
+
+        // Folders change -> config trigger must now restart!
+        folders = ['/workspace/a', '/workspace/b'];
+        const changeResult = await coordinator.triggerRestart('config');
+        assert.strictEqual(changeResult, 'restarted');
+        assert.deepStrictEqual(restartCalls, ['/usr/local/bin/kubescape']);
+        assert.deepStrictEqual(coordinator.getLastAppliedWorkspaceFolders(), ['/workspace/a', '/workspace/b']);
+    });
+
+    it('returns superseded when restart is superseded by newer generation or disposal', async () => {
+        const deferred = new Deferred<string>();
+        const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, () => deferred.promise);
+
+        const restartPromise = coordinator.triggerRestart('manual');
+        coordinator.dispose();
+        deferred.resolve('/usr/local/bin/kubescape');
+
+        const result = await restartPromise;
+        assert.strictEqual(result, 'superseded');
     });
 
     it('suppresses errors from superseded discovery requests', async () => {

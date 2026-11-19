@@ -29,8 +29,8 @@ describe('Executable Discovery Tests', () => {
 
     it('returns platform-appropriate executable candidate names', () => {
         const winNames = getExecutableNames('win32');
-        assert.ok(winNames.includes('kubescape.exe'));
-        assert.ok(winNames.includes('kubescape'));
+        assert.deepStrictEqual(winNames, ['kubescape.exe']);
+        assert.ok(!winNames.includes('kubescape'), 'Windows must not include extensionless kubescape');
         assert.ok(!winNames.includes('kubescape.cmd'), 'Windows batch .cmd must not be candidate');
         assert.ok(!winNames.includes('kubescape.bat'), 'Windows batch .bat must not be candidate');
 
@@ -83,18 +83,54 @@ describe('Executable Discovery Tests', () => {
             );
         });
 
-        it('isExecutable rejects .cmd and .bat on Windows while accepting .exe', async () => {
+        it('isExecutable rejects .cmd, .bat, and extensionless files on Windows while accepting .exe', async () => {
             const cmdPath = path.join(tmpDir, 'test.cmd');
             const batPath = path.join(tmpDir, 'test.bat');
+            const extensionlessPath = path.join(tmpDir, 'test');
             const exePath = path.join(tmpDir, 'test.exe');
 
             await fs.promises.writeFile(cmdPath, '@echo off');
             await fs.promises.writeFile(batPath, '@echo off');
+            await fs.promises.writeFile(extensionlessPath, '#!/bin/sh');
             await fs.promises.writeFile(exePath, 'binary content');
 
             assert.strictEqual(await isExecutable(cmdPath, 'win32'), false);
             assert.strictEqual(await isExecutable(batPath, 'win32'), false);
+            assert.strictEqual(await isExecutable(extensionlessPath, 'win32'), false);
             assert.strictEqual(await isExecutable(exePath, 'win32'), true);
+        });
+
+        it('findKubescapeExecutable accepts directory ending in .cmd containing kubescape.exe', async () => {
+            const cmdDir = path.join(tmpDir, 'tools.cmd');
+            await fs.promises.mkdir(cmdDir, { recursive: true });
+            const binPath = path.join(cmdDir, 'kubescape.exe');
+            await fs.promises.writeFile(binPath, 'dummy exe content');
+
+            const resolved = await findKubescapeExecutable({
+                configuredPath: cmdDir,
+                platform: 'win32',
+            });
+            assert.strictEqual(resolved, binPath);
+            assert.ok(path.isAbsolute(resolved));
+        });
+
+        it('rejects configured extensionless file on Windows with NOT_EXECUTABLE', async () => {
+            const extensionlessPath = path.join(tmpDir, 'kubescape');
+            await fs.promises.writeFile(extensionlessPath, '#!/bin/sh\necho hi');
+
+            await assert.rejects(
+                async () => {
+                    await findKubescapeExecutable({
+                        configuredPath: extensionlessPath,
+                        platform: 'win32',
+                    });
+                },
+                (err: any) => {
+                    assert.ok(err instanceof DiscoveryError);
+                    assert.strictEqual(err.code, 'NOT_EXECUTABLE');
+                    return true;
+                }
+            );
         });
     });
 
