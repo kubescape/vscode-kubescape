@@ -3,6 +3,8 @@ import * as cp from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { shouldScanDocumentOnSave, createDidSaveMiddleware } from '../../server/manifestFilter';
+import { awaitJsonRpcMessage, awaitJsonRpcResponse, awaitDiagnosticsForUri } from './rpcWait';
 
 function encodeFrame(msg: any): Buffer {
     const json = JSON.stringify(msg);
@@ -221,15 +223,12 @@ spec:
         }));
 
         // 5. Await publishDiagnostics notification
-        let diagMsg: any;
-        const deadline = Date.now() + 90000;
-        while (Date.now() < deadline) {
-            const msg = await nextMessage(60000);
-            if (msg.method === 'textDocument/publishDiagnostics') {
-                diagMsg = msg;
-                break;
-            }
-        }
+        const diagMsg = await awaitJsonRpcMessage(
+            nextMessage,
+            (m) => m.method === 'textDocument/publishDiagnostics',
+            'publishDiagnostics notification',
+            90000
+        );
 
         assert.ok(diagMsg, 'Expected textDocument/publishDiagnostics notification');
         assert.strictEqual(diagMsg.params?.uri, fileUri);
@@ -247,6 +246,11 @@ spec:
             assert.ok(typeof d.range.start.character === 'number', 'Range must have start character');
         }
 
+        // Helper to await matching response message while skipping unrelated notifications.
+        // Bounded by one absolute deadline; each wait receives only the remaining time.
+        const awaitResponse = (id: number, timeoutMs = 30000): Promise<any> =>
+            awaitJsonRpcResponse(nextMessage, id, timeoutMs);
+
         // 6. Shutdown
         proc.stdin?.write(encodeFrame({
             jsonrpc: '2.0',
@@ -254,7 +258,7 @@ spec:
             method: 'shutdown',
         }));
 
-        const shutdownResp = await nextMessage();
+        const shutdownResp = await awaitResponse(2);
         assert.strictEqual(shutdownResp.id, 2);
         assert.strictEqual(shutdownResp.result, null);
 
@@ -264,6 +268,364 @@ spec:
             method: 'exit',
         }));
 
+        const exitCode = await new Promise<number | null>((resolve) => {
+            proc.on('exit', (code) => resolve(code));
+        });
+        assert.strictEqual(exitCode, 0);
+    });
+
+    it('preserves complete multi-resource findings in realistic multi-manifest workspace across save filter (Section 3 Audit)', async () => {
+        // Create realistic multi-resource fixtures:
+        // 1. ServiceAccount
+        const saPath = path.join(tmpDir, 'serviceaccount.yaml');
+        const saContent = `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: privileged-sa
+  namespace: default
+`;
+        await fs.promises.writeFile(saPath, saContent, 'utf8');
+
+        // 2. ClusterRole with wildcards
+        const rolePath = path.join(tmpDir, 'clusterrole.yaml');
+        const roleContent = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: privileged-cluster-role
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+`;
+        await fs.promises.writeFile(rolePath, roleContent, 'utf8');
+
+        // 3. ClusterRoleBinding
+        const bindingPath = path.join(tmpDir, 'rolebinding.yaml');
+        const bindingContent = `apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: privileged-binding
+subjects:
+- kind: ServiceAccount
+  name: privileged-sa
+  namespace: default
+roleRef:
+  kind: ClusterRole
+  name: privileged-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+`;
+        await fs.promises.writeFile(bindingPath, bindingContent, 'utf8');
+
+        // 4. Pod referencing the ServiceAccount
+        const podPath = path.join(tmpDir, 'pod.yaml');
+        const podContent = `apiVersion: v1
+kind: Pod
+metadata:
+  name: bound-workload
+  namespace: default
+spec:
+  serviceAccountName: privileged-sa
+  containers:
+  - name: web
+    image: nginx
+    securityContext:
+      privileged: true
+      allowPrivilegeEscalation: true
+`;
+        await fs.promises.writeFile(podPath, podContent, 'utf8');
+
+        // 5. Non-Kubernetes package.json file
+        const packageJsonPath = path.join(tmpDir, 'package.json');
+        const packageJsonContent = JSON.stringify({ name: 'k8s-project', version: '1.0.0' });
+        await fs.promises.writeFile(packageJsonPath, packageJsonContent, 'utf8');
+
+        // 6. Plain config.json (no apiVersion/kind) and kustomization.yaml referencing it
+        const indirectConfigPath = path.join(tmpDir, 'app-config.json');
+        const indirectConfigContent = JSON.stringify({ insecure: true, debug: false });
+        await fs.promises.writeFile(indirectConfigPath, indirectConfigContent, 'utf8');
+
+        const kustomizePath = path.join(tmpDir, 'kustomization.yaml');
+        const kustomizeContent = `apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+configMapGenerator:
+- name: generated-config
+  files:
+  - app-config.json
+resources:
+- pod.yaml
+- serviceaccount.yaml
+- clusterrole.yaml
+- rolebinding.yaml
+`;
+        await fs.promises.writeFile(kustomizePath, kustomizeContent, 'utf8');
+
+        // Verify Candidate Filter behavior:
+        // A. package.json save must be suppressed
+        const packageDoc = {
+            uri: { scheme: 'file', fsPath: packageJsonPath },
+            languageId: 'json',
+            fileName: packageJsonPath,
+            getText: () => packageJsonContent,
+        };
+        assert.strictEqual(shouldScanDocumentOnSave(packageDoc), false, 'package.json must be filtered out');
+
+        // B. pod.yaml save must be forwarded
+        const podDoc = {
+            uri: { scheme: 'file', fsPath: podPath },
+            languageId: 'yaml',
+            fileName: podPath,
+            getText: () => podContent,
+        };
+        assert.strictEqual(shouldScanDocumentOnSave(podDoc), true, 'pod.yaml must be forwarded as scan candidate');
+
+        // C. app-config.json save must be forwarded as indirect Kustomize dependency
+        const indirectDoc = {
+            uri: { scheme: 'file', fsPath: indirectConfigPath },
+            languageId: 'json',
+            fileName: indirectConfigPath,
+            getText: () => indirectConfigContent,
+        };
+        assert.strictEqual(shouldScanDocumentOnSave(indirectDoc), true, 'app-config.json must be forwarded as indirect dependency');
+
+        // 1. Initialize LSP server with multi-resource workspace
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            id: 10,
+            method: 'initialize',
+            params: {
+                processId: process.pid,
+                rootUri: `file://${tmpDir}`,
+                capabilities: {},
+            },
+        }));
+
+        const initResp = await nextMessage();
+        assert.strictEqual(initResp.id, 10);
+
+        // 2. Initialized
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'initialized',
+            params: {},
+        }));
+
+        // 3. didOpen for pod.yaml
+        const podUri = `file://${podPath}`;
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'textDocument/didOpen',
+            params: {
+                textDocument: {
+                    uri: podUri,
+                    languageId: 'yaml',
+                    version: 1,
+                    text: podContent,
+                },
+            },
+        }));
+
+        // Normalization and sorting helpers for deep equivalence verification
+        const normalizeDiag = (d: any) => ({
+            code: String(d.code),
+            message: String(d.message),
+            severity: Number(d.severity),
+            source: String(d.source),
+            href: d.codeDescription?.href ? String(d.codeDescription.href) : undefined,
+            startLine: d.range?.start?.line,
+            startChar: d.range?.start?.character,
+            endLine: d.range?.end?.line,
+            endChar: d.range?.end?.character,
+        });
+        const sortDiags = (arr: any[]) => arr.slice().sort((a, b) =>
+            (a.startLine - b.startLine) ||
+            (a.startChar - b.startChar) ||
+            a.code.localeCompare(b.code) ||
+            a.message.localeCompare(b.message)
+        );
+
+        // Helper to await diagnostics for a given URI
+        const awaitDiagnostics = (uri: string, timeoutMs = 90000): Promise<any[]> =>
+            awaitDiagnosticsForUri(nextMessage, uri, timeoutMs);
+
+        // Helper to await matching response message while skipping unrelated notifications.
+        // Bounded by one absolute deadline; each wait receives only the remaining time.
+        const awaitResponse = (id: number, timeoutMs = 30000): Promise<any> =>
+            awaitJsonRpcResponse(nextMessage, id, timeoutMs);
+
+        // Create the actual production save-filtering middleware
+        const productionMiddleware = createDidSaveMiddleware(shouldScanDocumentOnSave);
+
+        // 4. Baseline Save (Unfiltered Path):
+        // Directly send didSave for pod.yaml as baseline scan
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'textDocument/didSave',
+            params: {
+                textDocument: { uri: podUri },
+            },
+        }));
+
+        const rawBaselineDiags = await awaitDiagnostics(podUri);
+        assert.ok(Array.isArray(rawBaselineDiags) && rawBaselineDiags.length > 0, 'Baseline must produce security findings');
+        const baselineDiags = sortDiags(rawBaselineDiags.map(normalizeDiag));
+        assert.ok(baselineDiags.length >= 3, `Expected at least 3 control findings, got ${baselineDiags.length}`);
+
+        // 5. Test Non-Candidate Save (Optimized Path: Exercising Production Middleware):
+        // Verify saving package.json is intercepted and suppressed by production middleware
+        let packageSaveForwarded = false;
+        await productionMiddleware(packageDoc as any, async () => {
+            packageSaveForwarded = true;
+            proc.stdin?.write(encodeFrame({
+                jsonrpc: '2.0',
+                method: 'textDocument/didSave',
+                params: {
+                    textDocument: { uri: `file://${packageJsonPath}` },
+                },
+            }));
+        });
+        assert.strictEqual(packageSaveForwarded, false, 'Production middleware must NOT forward didSave for package.json');
+
+        // 6. Test Candidate Save (Optimized Path: Exercising Production Middleware):
+        // Verify saving pod.yaml is evaluated as candidate and forwarded by production middleware
+        let podSaveForwarded = false;
+        await productionMiddleware(podDoc as any, async () => {
+            podSaveForwarded = true;
+            proc.stdin?.write(encodeFrame({
+                jsonrpc: '2.0',
+                method: 'textDocument/didSave',
+                params: {
+                    textDocument: { uri: podUri },
+                },
+            }));
+        });
+        assert.strictEqual(podSaveForwarded, true, 'Production middleware MUST forward didSave for candidate pod.yaml');
+
+        const rawOptimizedDiags = await awaitDiagnostics(podUri);
+        const optimizedDiags = sortDiags(rawOptimizedDiags.map(normalizeDiag));
+
+        // 7. Complete Deep Equivalence Check:
+        // Confirm the complete normalized diagnostic set is 100% identical between baseline and optimized paths
+        assert.deepStrictEqual(optimizedDiags, baselineDiags, 'Optimized scan diagnostics must be 100% identical to baseline diagnostics');
+
+        // 8. Test Indirect Dependency Save via Real LSP:
+        // Open indirect dependency in document store
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'textDocument/didOpen',
+            params: {
+                textDocument: {
+                    uri: `file://${indirectConfigPath}`,
+                    languageId: 'json',
+                    version: 1,
+                    text: indirectConfigContent,
+                },
+            },
+        }));
+
+        // Verify production middleware forwards indirect dependency save
+        let indirectSaveForwarded = false;
+        await productionMiddleware(indirectDoc as any, async () => {
+            indirectSaveForwarded = true;
+            proc.stdin?.write(encodeFrame({
+                jsonrpc: '2.0',
+                method: 'textDocument/didSave',
+                params: {
+                    textDocument: { uri: `file://${indirectConfigPath}` },
+                },
+            }));
+        });
+        assert.strictEqual(indirectSaveForwarded, true, 'Production middleware MUST forward didSave for indirect dependency');
+
+        // Real LSP server must trigger a workspace scan and publish diagnostics
+        const rawIndirectDiags = await awaitDiagnostics(podUri);
+        const indirectDiags = sortDiags(rawIndirectDiags.map(normalizeDiag));
+        assert.deepStrictEqual(indirectDiags, baselineDiags, 'Indirect dependency save must trigger scan preserving full workspace findings');
+
+        // 9. Shutdown & Exit
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            id: 20,
+            method: 'shutdown',
+        }));
+        const shutdownResp = await awaitResponse(20);
+        assert.strictEqual(shutdownResp.id, 20);
+        assert.strictEqual(shutdownResp.result, null);
+
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0',
+            method: 'exit',
+        }));
+        const exitCode = await new Promise<number | null>((resolve) => {
+            proc.on('exit', (code) => resolve(code));
+        });
+        assert.strictEqual(exitCode, 0);
+    });
+
+    it('synchronizes a JSONC dependency without the server scanning it as a manifest', async () => {
+        const podPath = path.join(tmpDir, 'pod.yaml');
+        const podContent = `apiVersion: v1
+kind: Pod
+metadata:
+  name: jsonc-pod
+spec:
+  hostPID: true
+  containers:
+  - name: nginx
+    image: nginx:latest
+    securityContext:
+      privileged: true
+`;
+        await fs.promises.writeFile(podPath, podContent, 'utf8');
+        const jsoncPath = path.join(tmpDir, 'typedoc.json');
+        // Valid JSON content synchronized with the 'jsonc' language id. (Probed limitation: a workspace file
+        // that is not parseable JSON, e.g. one containing // comments, makes the Kubescape directory
+        // scan publish nothing regardless of the language id the client uses; that is CLI behavior.)
+        const jsoncContent = '{\n  "entryPoints": ["src"]\n}\n';
+        await fs.promises.writeFile(jsoncPath, jsoncContent, 'utf8');
+        const podUri = `file://${podPath}`;
+        const jsoncUri = `file://${jsoncPath}`;
+
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', id: 30, method: 'initialize',
+            params: { processId: process.pid, rootUri: `file://${tmpDir}`, capabilities: {} },
+        }));
+        assert.strictEqual((await nextMessage()).id, 30);
+        proc.stdin?.write(encodeFrame({ jsonrpc: '2.0', method: 'initialized', params: {} }));
+
+        // Open both documents the way the language client does for the extended selector
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', method: 'textDocument/didOpen',
+            params: { textDocument: { uri: podUri, languageId: 'yaml', version: 1, text: podContent } },
+        }));
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', method: 'textDocument/didOpen',
+            params: { textDocument: { uri: jsoncUri, languageId: 'jsonc', version: 1, text: jsoncContent } },
+        }));
+
+        // Saving the JSONC file triggers the usual full-workspace scan
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', method: 'textDocument/didSave', params: { textDocument: { uri: jsoncUri } },
+        }));
+
+        // Collect diagnostics until the pod's arrive; the JSONC file must never get findings
+        const seen: any[] = [];
+        const podDiags = await awaitJsonRpcMessage(
+            (t) => nextMessage(t).then((m) => { seen.push(m); return m; }),
+            (m) => m.method === 'textDocument/publishDiagnostics' && m.params?.uri === podUri,
+            'publishDiagnostics for pod.yaml',
+            90000
+        );
+        assert.ok(podDiags.params.diagnostics.length > 0, 'JSONC save must trigger the full-workspace scan');
+        for (const m of seen) {
+            if (m.method === 'textDocument/publishDiagnostics' && m.params?.uri === jsoncUri) {
+                assert.strictEqual(m.params.diagnostics.length, 0, 'JSONC content must not be reported as a manifest');
+            }
+        }
+
+        proc.stdin?.write(encodeFrame({ jsonrpc: '2.0', id: 31, method: 'shutdown' }));
+        const shutdownResp = await awaitJsonRpcResponse(nextMessage, 31, 30000);
+        assert.strictEqual(shutdownResp.result, null);
+        proc.stdin?.write(encodeFrame({ jsonrpc: '2.0', method: 'exit' }));
         const exitCode = await new Promise<number | null>((resolve) => {
             proc.on('exit', (code) => resolve(code));
         });
