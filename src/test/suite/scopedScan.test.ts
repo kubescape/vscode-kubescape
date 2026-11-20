@@ -15,10 +15,17 @@ import {
     isKustomizeDependency,
     isHelmDependency,
     clearForcedScansForOwner,
+    clearOwnerState,
+    createDidSaveMiddleware,
+    createDidOpenMiddleware,
+    createDidCloseMiddleware,
+    extractKustomizeReferences,
+    analyzeHelmTemplate,
     setTimeProvider,
     resetTimeProvider,
     ScannableDocument,
 } from '../../server/manifestFilter';
+import { awaitJsonRpcResponse } from './rpcWait';
 
 describe('LSP Save-Time Scoped Scanning & Filter Tests (Second-Pass Audit)', () => {
     beforeEach(() => {
@@ -962,12 +969,19 @@ configMapGenerator:
             assert.strictEqual(isKustomizeDependency(fileA), true, 'Initial reference to a.json');
             assert.strictEqual(isKustomizeDependency(fileB), false);
 
-            // 2. Same-size replacement: replace "a.json" with "b.json" (same byte length!) and preserve timestamp
+            // 2. Same-size replacement with the exact timestamp restored. A known whole-second
+            // timestamp avoids losing fractional milliseconds when converting mtimeMs to a Date.
+            const knownTime = new Date(1700000000 * 1000);
+            fs.utimesSync(kPath, knownTime, knownTime);
+            assert.strictEqual(isKustomizeDependency(fileA), true, 'Cache primed with a.json');
             const statBefore = fs.statSync(kPath);
             const contentB = 'apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nconfigMapGenerator:\n- name: cm\n  files:\n  - b.json\n';
             assert.strictEqual(Buffer.byteLength(contentA), Buffer.byteLength(contentB), 'Must be identical byte size');
             fs.writeFileSync(kPath, contentB);
-            fs.utimesSync(kPath, statBefore.atime, statBefore.mtime); // Preserve exact mtime!
+            fs.utimesSync(kPath, knownTime, knownTime); // Restore the exact known timestamp
+            const statAfter = fs.statSync(kPath);
+            assert.strictEqual(statAfter.size, statBefore.size, 'Size must be unchanged');
+            assert.strictEqual(statAfter.mtimeMs, statBefore.mtimeMs, 'mtimeMs must be unchanged');
 
             // Content-based identity must detect hash change despite identical mtime and size
             assert.strictEqual(isKustomizeDependency(fileA), false, 'a.json must be invalidated despite preserved mtime');
@@ -1002,12 +1016,18 @@ configMapGenerator:
             assert.strictEqual(isHelmDependency(fileA), true, 'Initially references a.json');
             assert.strictEqual(isHelmDependency(fileB), false);
 
-            // Same-size replacement in template: "a.json" -> "b.json" with preserved mtime
+            // Same-size replacement in template with the exact known timestamp restored
+            const knownTime = new Date(1700000000 * 1000);
+            fs.utimesSync(tmplPath, knownTime, knownTime);
+            assert.strictEqual(isHelmDependency(fileA), true, 'Cache primed with a.json');
             const statBefore = fs.statSync(tmplPath);
             const tmplContentB = 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  val: |- {{ .Files.Get "b.json" }}\n';
             assert.strictEqual(Buffer.byteLength(tmplContentA), Buffer.byteLength(tmplContentB));
             fs.writeFileSync(tmplPath, tmplContentB);
-            fs.utimesSync(tmplPath, statBefore.atime, statBefore.mtime); // Preserve exact mtime!
+            fs.utimesSync(tmplPath, knownTime, knownTime); // Restore the exact known timestamp
+            const statAfter = fs.statSync(tmplPath);
+            assert.strictEqual(statAfter.size, statBefore.size, 'Size must be unchanged');
+            assert.strictEqual(statAfter.mtimeMs, statBefore.mtimeMs, 'mtimeMs must be unchanged');
 
             // Content-based template hash must invalidate chart cache
             assert.strictEqual(isHelmDependency(fileA), false, 'a.json must be invalidated on content change with preserved mtime');
@@ -1054,25 +1074,34 @@ spec:
             const targetJson = path.join(chartDir, 'data.json');
             fs.writeFileSync(targetJson, '{"key": "val"}');
 
-            // Create an unreadable template file (000 permissions on POSIX)
-            const unreadableTmpl = path.join(templatesDir, 'broken.yaml');
-            fs.writeFileSync(unreadableTmpl, 'some template content');
-            try {
-                fs.chmodSync(unreadableTmpl, 0o000);
-            } catch {
-                // If chmod is not supported, pass
-            }
+            const brokenTmpl = path.join(templatesDir, 'broken.yaml');
+            fs.writeFileSync(brokenTmpl, 'some template content');
+
+            // Deterministic read failure for exactly this template (no chmod, platform independent)
+            const realReadFileSync = fs.readFileSync;
+            let injectFailure = true;
+            (fs as any).readFileSync = function (this: unknown, file: any, ...rest: any[]) {
+                if (injectFailure && typeof file === 'string' && path.resolve(file) === path.resolve(brokenTmpl)) {
+                    const err: NodeJS.ErrnoException = new Error('EACCES: injected read failure');
+                    err.code = 'EACCES';
+                    throw err;
+                }
+                return (realReadFileSync as any).call(this, file, ...rest);
+            };
 
             try {
                 // When template reading fails, chart is treated as uncertain -> returns true without persistent negative cache
-                const result = isHelmDependency(targetJson);
-                assert.strictEqual(result, true, 'Uncertain chart with read errors must forward save');
+                assert.strictEqual(isHelmDependency(targetJson), true, 'Uncertain chart with read errors must forward save');
+
+                // Restore normal reads; the template has no reference, so the chart is no longer uncertain
+                injectFailure = false;
+                assert.strictEqual(isHelmDependency(targetJson), false, 'Incomplete result must not have been cached as a dependency');
+
+                // Make the template reference the file: dependency now detected
+                fs.writeFileSync(brokenTmpl, 'data: {{ .Files.Lines "data.json" }}\n');
+                assert.strictEqual(isHelmDependency(targetJson), true, 'Next analysis must detect the .Files.Lines dependency');
             } finally {
-                try {
-                    fs.chmodSync(unreadableTmpl, 0o644);
-                } catch {
-                    // Cleanup
-                }
+                (fs as any).readFileSync = realReadFileSync;
             }
         });
 
@@ -1401,6 +1430,353 @@ data:
             }
 
             assert.deepStrictEqual(saved, ['/workspace/k8s.yaml']);
+        });
+    });
+
+    describe('Save that removes previously relevant content (manifest-removal regression)', () => {
+        const OWNER = 'client_a';
+        const POD = 'apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\n';
+
+        function mutableDoc(file: string, initial: string, languageId = 'yaml') {
+            const state = { text: initial };
+            const doc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: file, toString: () => `file://${file}` },
+                languageId,
+                fileName: file,
+                getText: () => state.text,
+            };
+            return { doc, state };
+        }
+
+        function pipeline(owner: string = OWNER) {
+            const save = createDidSaveMiddleware((d) => shouldScanDocumentOnSave(d, owner));
+            const open = createDidOpenMiddleware(owner);
+            const close = createDidCloseMiddleware(owner);
+            const run = async (mw: (d: any, n: (d: any) => Promise<void>) => Promise<void>, d: ScannableDocument) => {
+                let forwarded = false;
+                await mw(d, async () => { forwarded = true; });
+                return forwarded;
+            };
+            return {
+                open: (d: ScannableDocument) => run(open, d),
+                close: (d: ScannableDocument) => run(close, d),
+                save: (d: ScannableDocument) => run(save, d),
+            };
+        }
+
+        it('forwards manifest -> empty content', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/pod1.yaml', POD);
+            const p = pipeline();
+            await p.open(doc);
+            assert.strictEqual(await p.save(doc), true);
+            state.text = '';
+            assert.strictEqual(await p.save(doc), true);
+        });
+
+        it('forwards manifest -> foo: bar', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/pod2.yaml', POD);
+            const p = pipeline();
+            await p.open(doc);
+            state.text = 'foo: bar\n';
+            assert.strictEqual(await p.save(doc), true);
+        });
+
+        it('forwards manifest -> unrelated JSON', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/pod3.yaml', POD);
+            const p = pipeline();
+            await p.open(doc);
+            state.text = '{"hello": "world"}';
+            assert.strictEqual(await p.save(doc), true);
+        });
+
+        it('suppresses unrelated YAML -> unrelated YAML', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/plain.yaml', 'foo: bar\n');
+            const p = pipeline();
+            await p.open(doc);
+            state.text = 'foo: baz\n';
+            assert.strictEqual(await p.save(doc), false);
+        });
+
+        it('forwards unrelated YAML -> Kubernetes manifest', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/becomes.yaml', 'foo: bar\n');
+            const p = pipeline();
+            await p.open(doc);
+            state.text = POD;
+            assert.strictEqual(await p.save(doc), true);
+        });
+
+        it('does not treat a URI as relevant forever after the removal save', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/once.yaml', POD);
+            const p = pipeline();
+            await p.open(doc);
+            state.text = 'foo: bar\n';
+            assert.strictEqual(await p.save(doc), true, 'removal save forwarded once');
+            state.text = 'foo: baz\n';
+            assert.strictEqual(await p.save(doc), false, 'later unrelated save suppressed');
+            state.text = 'foo: qux\n';
+            assert.strictEqual(await p.save(doc), false);
+        });
+
+        it('classifies on save even when the first-ever save of an unopened URI is a manifest', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/noopen.yaml', POD);
+            const p = pipeline();
+            assert.strictEqual(await p.save(doc), true);
+            state.text = '';
+            assert.strictEqual(await p.save(doc), true, 'state learned from save must still catch removal');
+        });
+
+        it('does not retain stale classification across close and reopen', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/reopen.yaml', POD);
+            const p = pipeline();
+            await p.open(doc);
+            await p.close(doc);
+            // File was changed externally while closed; reopening reflects unrelated content
+            state.text = 'foo: bar\n';
+            await p.open(doc);
+            state.text = 'foo: baz\n';
+            assert.strictEqual(await p.save(doc), false, 'stale relevant state must not survive close/reopen');
+        });
+
+        it('still forwards the removal save after reopening a manifest', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/reopen2.yaml', 'foo: bar\n');
+            const p = pipeline();
+            await p.open(doc);
+            await p.close(doc);
+            state.text = POD;
+            await p.open(doc); // refreshed as relevant
+            state.text = '';
+            assert.strictEqual(await p.save(doc), true);
+        });
+
+        it('forgets closed documents so memory does not accumulate', async () => {
+            const { doc, state } = mutableDoc('/ws/mr/closed.yaml', POD);
+            const p = pipeline();
+            await p.open(doc);
+            await p.close(doc);
+            state.text = 'foo: bar\n';
+            // After close, nothing is remembered: an unrelated save is suppressed
+            assert.strictEqual(await p.save(doc), false);
+        });
+
+        it('clears only the retiring client\'s remembered state', async () => {
+            const a = mutableDoc('/ws/mr/own.yaml', POD);
+            const pa = pipeline('client_a');
+            const pb = pipeline('client_b');
+            await pa.open(a.doc);
+            await pb.open(a.doc);
+            clearOwnerState('client_a');
+            a.state.text = 'foo: bar\n';
+            assert.strictEqual(await pa.save(a.doc), false, 'retired client state was cleared');
+            a.state.text = POD;
+            await pb.save(a.doc); // client_b remembers relevance
+            a.state.text = 'foo: bar\n';
+            assert.strictEqual(await pb.save(a.doc), true, 'other client keeps its state');
+        });
+
+        it('a valid forced scan still forwards an unrelated document', async () => {
+            const { doc } = mutableDoc('/ws/mr/forced.yaml', 'foo: bar\n');
+            const p = pipeline();
+            await p.open(doc);
+            const handle = armForcedScan(doc, OWNER);
+            assert.strictEqual(await p.save(doc), true);
+            assert.strictEqual(handle.isConsumed, true);
+            assert.strictEqual(await p.save(doc), false);
+        });
+    });
+
+    describe('Forced-scan handle ownership with overlapping attempts', () => {
+        const doc: ScannableDocument = {
+            uri: { scheme: 'file', fsPath: '/ws/own/a.yaml', toString: () => 'file:///ws/own/a.yaml' },
+            languageId: 'yaml',
+            fileName: '/ws/own/a.yaml',
+            getText: () => 'foo: bar\n',
+        };
+
+        it('older revoke() and complete() leave a newer attempt armed and consumable exactly once', () => {
+            const a = armForcedScan(doc, 'o');
+            const b = armForcedScan(doc, 'o');
+            a.revoke();
+            assert.strictEqual(isScanForcedForDocument(doc, 'o'), true, 'B remains after A.revoke');
+            a.complete();
+            assert.strictEqual(isScanForcedForDocument(doc, 'o'), true, 'B remains after A.complete');
+            assert.strictEqual(b.isActive, true);
+            assert.strictEqual(consumeForceScan(doc, 'o'), true);
+            assert.strictEqual(b.isConsumed, true);
+            assert.strictEqual(consumeForceScan(doc, 'o'), false, 'consumed exactly once');
+            assert.strictEqual(shouldScanDocumentOnSave(doc, 'o'), false, 'ordinary saves are not forced afterwards');
+        });
+
+        it('A completing after B was armed does not remove B (reverse ordering)', () => {
+            const a = armForcedScan(doc, 'o');
+            const b = armForcedScan(doc, 'o');
+            b.complete(); // B finishes first without consuming: its own entry is removed
+            assert.strictEqual(isScanForcedForDocument(doc, 'o'), false);
+            const c = armForcedScan(doc, 'o');
+            a.complete();
+            a.revoke();
+            assert.strictEqual(isScanForcedForDocument(doc, 'o'), true, 'C survives stale A handle');
+            assert.strictEqual(c.isActive, true);
+            assert.strictEqual(consumeForceScan(doc, 'o'), true);
+            assert.strictEqual(shouldScanDocumentOnSave(doc, 'o'), false);
+        });
+
+        it('a revoke after the attempt was consumed does not affect a newer attempt', () => {
+            const a = armForcedScan(doc, 'o');
+            assert.strictEqual(consumeForceScan(doc, 'o'), true);
+            const b = armForcedScan(doc, 'o');
+            a.revoke();
+            a.complete();
+            assert.strictEqual(isScanForcedForDocument(doc, 'o'), true);
+            assert.strictEqual(b.isActive, true);
+        });
+    });
+
+    describe('Kustomize path parsing with # characters', () => {
+        it('preserves # inside quoted key=path values', () => {
+            const refs = extractKustomizeReferences(
+                'configMapGenerator:\n- name: cm\n  files:\n  - "settings=settings#prod.json"\n  - \'k=a#b.json\'\n'
+            );
+            assert.ok(refs.has('settings#prod.json'));
+            assert.ok(refs.has('a#b.json'));
+        });
+
+        it('ignores a trailing YAML comment after an unquoted path and after a quoted path', () => {
+            const refs = extractKustomizeReferences('resources:\n- base.yaml # shared base\n- "other.yaml" # quoted\n');
+            assert.ok(refs.has('base.yaml'));
+            assert.ok(refs.has('other.yaml'));
+            assert.ok(![...refs].some((r) => r.includes('#') || r.includes('shared')));
+        });
+
+        it('treats # without leading whitespace in a plain scalar as literal', () => {
+            const refs = extractKustomizeReferences('resources:\n- app#1.yaml\n');
+            assert.ok(refs.has('app#1.yaml'));
+        });
+
+        it('handles quoted paths with spaces and #, and flow sequences', () => {
+            const refs = extractKustomizeReferences(
+                'resources:\n- "my dir/settings #1.json" # note\nfiles: ["a#x.json", b.json] # trailing\n'
+            );
+            assert.ok(refs.has('my dir/settings #1.json'));
+            assert.ok(refs.has('a#x.json'));
+            assert.ok(refs.has('b.json'));
+        });
+
+        it('skips whole-line comments', () => {
+            const refs = extractKustomizeReferences('# - hidden.json\nresources:\n- shown.yaml\n');
+            assert.ok(!refs.has('hidden.json'));
+            assert.ok(refs.has('shown.yaml'));
+        });
+
+        describe('exact matching on disk', () => {
+            let dir: string;
+            before(() => {
+                dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ks-kz-hash-'));
+                fs.mkdirSync(path.join(dir, 'sub'));
+                fs.writeFileSync(path.join(dir, 'settings#prod.json'), '{}');
+                fs.writeFileSync(path.join(dir, 'settings.json'), '{}');
+                fs.writeFileSync(path.join(dir, 'sub', 'settings#prod.json'), '{}');
+                fs.writeFileSync(
+                    path.join(dir, 'kustomization.yaml'),
+                    'configMapGenerator:\n- name: cm\n  files:\n  - "settings=settings#prod.json"\n'
+                );
+            });
+            after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+            it('matches the exact normalized path only', () => {
+                assert.strictEqual(isKustomizeDependency(path.join(dir, 'settings#prod.json')), true);
+                assert.strictEqual(isKustomizeDependency(path.join(dir, 'settings.json')), false);
+                assert.strictEqual(isKustomizeDependency(path.join(dir, 'sub', 'settings#prod.json')), false, 'same basename elsewhere must not match');
+            });
+        });
+    });
+
+    describe('Helm .Files.Lines support', () => {
+        let root: string;
+        before(() => {
+            root = fs.mkdtempSync(path.join(os.tmpdir(), 'ks-helm-lines-'));
+        });
+        after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+        function chart(name: string, template: string, extra: string[] = ['settings.json', 'other.json']) {
+            const dir = path.join(root, name);
+            fs.mkdirSync(path.join(dir, 'templates'), { recursive: true });
+            fs.writeFileSync(path.join(dir, 'Chart.yaml'), 'apiVersion: v2\nname: c\nversion: 1.0.0\n');
+            fs.writeFileSync(path.join(dir, 'templates', 't.yaml'), template);
+            for (const f of extra) {
+                fs.writeFileSync(path.join(dir, f), '{}');
+            }
+            return dir;
+        }
+
+        it('analyzes literal .Files.Lines as an exact literal without uncertainty', () => {
+            const a = analyzeHelmTemplate('x: {{ range .Files.Lines "settings.json" }}{{ . }}{{ end }}');
+            assert.strictEqual(a.usesGlobOrComputed, false);
+            assert.ok(a.literals.has('settings.json'));
+        });
+
+        it('literal .Files.Lines matches exact chart-relative path only', () => {
+            const dir = chart('lit', 'x: {{ range .Files.Lines "settings.json" }}{{ . }}{{ end }}\n');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'settings.json')), true);
+            assert.strictEqual(isHelmDependency(path.join(dir, 'other.json')), false, 'unrelated file not a dependency');
+        });
+
+        it('does not use basename fallback for .Files.Lines', () => {
+            const dir = chart('nobase', 'x: {{ .Files.Lines "settings.json" }}\n', ['settings.json']);
+            fs.mkdirSync(path.join(dir, 'tools'));
+            fs.writeFileSync(path.join(dir, 'tools', 'settings.json'), '{}');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'tools', 'settings.json')), false);
+        });
+
+        it('treats variable/alias, piped and computed .Files.Lines as uncertain', () => {
+            assert.strictEqual(analyzeHelmTemplate('{{ $f := .Files }}{{ $f.Lines "a.json" }}').usesGlobOrComputed, true);
+            assert.strictEqual(analyzeHelmTemplate('{{ "a.json" | .Files.Lines }}').usesGlobOrComputed, true);
+            assert.strictEqual(analyzeHelmTemplate('{{ .Files.Lines $name }}').usesGlobOrComputed, true);
+            assert.strictEqual(analyzeHelmTemplate('{{ .Files.Lines (printf "%s.json" .Values.n) }}').usesGlobOrComputed, true);
+
+            const dir = chart('computed', '{{ .Files.Lines (printf "%s.json" .Values.n) }}\n');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'other.json')), true, 'computed chart forwards chart files');
+        });
+    });
+
+    describe('JSON-RPC response wait uses one absolute deadline', () => {
+        it('returns the matching response while skipping notifications and other ids', async () => {
+            const queue: any[] = [{ method: 'n' }, { id: 9 }, { id: 2, result: null }];
+            const res = await awaitJsonRpcResponse(async () => queue.shift(), 2, 30000);
+            assert.strictEqual(res.id, 2);
+        });
+
+        it('passes the remaining time to each wait and does not reset it on unrelated messages', async () => {
+            let t = 0;
+            const budgets: number[] = [];
+            const next = async (timeoutMs: number) => {
+                budgets.push(timeoutMs);
+                t += 10000; // each unrelated message arrives after 10s
+                return { method: 'noise' };
+            };
+            await assert.rejects(awaitJsonRpcResponse(next, 1, 30000, () => t), /Timeout waiting for response id 1/);
+            assert.deepStrictEqual(budgets, [30000, 20000, 10000]);
+        });
+
+        it('does not cap an individual wait at 15s when the overall deadline allows more', async () => {
+            let t = 0;
+            let seen = 0;
+            const next = async (timeoutMs: number) => {
+                seen = timeoutMs;
+                t += 20000;
+                return { id: 5 };
+            };
+            const res = await awaitJsonRpcResponse(next, 5, 30000, () => t);
+            assert.strictEqual(res.id, 5);
+            assert.strictEqual(seen, 30000);
+        });
+
+        it('fails only when the overall deadline expires after a quiet wait times out', async () => {
+            let t = 0;
+            const next = async (timeoutMs: number) => {
+                t += timeoutMs;
+                throw new Error('Timeout waiting for LSP message');
+            };
+            await assert.rejects(awaitJsonRpcResponse(next, 3, 30000, () => t), /Timeout waiting for response id 3/);
         });
     });
 });

@@ -29,38 +29,34 @@ export const FORCE_SAVE_COMMAND = 'workbench.action.files.save';
  * so VS Code sends no didSave and nothing is scanned. Such a document is saved
  * with the command Ctrl+S runs instead, which writes it anyway.
  *
- * When onDidSaveTextDocument is provided, the function verifies that a matching
- * didSave event actually occurred for the document, rather than assuming a void
- * return from workbench.action.files.save implies success.
+ * The command may resolve with void, which is not proof that a save happened. The
+ * listener is registered before the command runs, and a matching didSave event
+ * (same document key) is the only confirmation. An event that arrives before the
+ * command resolves is still counted; an event for another document is not.
  */
 export async function saveToTriggerScan(
     document: SavableDocument,
     executeCommand: (command: string) => PromiseLike<unknown>,
-    onDidSaveTextDocument?: DidSaveListener
+    onDidSaveTextDocument: DidSaveListener
 ): Promise<boolean> {
     if (document.isDirty) {
         return Boolean(await document.save());
     }
 
-    if (onDidSaveTextDocument) {
-        let saved = false;
-        const targetKey = getDocumentKey(document as any);
-        const sub = onDidSaveTextDocument((savedDoc) => {
-            if (getDocumentKey(savedDoc) === targetKey) {
-                saved = true;
-            }
-        });
-        try {
-            const res = await executeCommand(FORCE_SAVE_COMMAND);
-            if (res === false) {
-                return false;
-            }
-            return saved;
-        } finally {
-            sub.dispose();
+    let saved = false;
+    const targetKey = getDocumentKey(document as any);
+    const sub = onDidSaveTextDocument((savedDoc) => {
+        if (getDocumentKey(savedDoc) === targetKey) {
+            saved = true;
         }
+    });
+    try {
+        const res = await executeCommand(FORCE_SAVE_COMMAND);
+        if (res === false) {
+            return false;
+        }
+        return saved;
+    } finally {
+        sub.dispose();
     }
-
-    const res = await executeCommand(FORCE_SAVE_COMMAND);
-    return res !== false;
 }

@@ -175,11 +175,15 @@ export function armForcedScan(
         },
         revoke() {
             attempt.isActive = false;
-            forcedScanAttempts.delete(key);
+            // Only remove the map entry if it still belongs to this exact attempt;
+            // a newer attempt for the same URI must never be disturbed.
+            if (forcedScanAttempts.get(key) === attempt) {
+                forcedScanAttempts.delete(key);
+            }
         },
         complete() {
             attempt.isActive = false;
-            if (!attempt.isConsumed) {
+            if (!attempt.isConsumed && forcedScanAttempts.get(key) === attempt) {
                 forcedScanAttempts.delete(key);
             }
         },
@@ -275,10 +279,63 @@ export function consumeForceScan(docOrUri: ScannableDocument | string, ownerId?:
 }
 
 /**
+ * Last known scan-relevance of each document, per owning client, keyed by normalized URI.
+ * A save that removes the Kubernetes content from a previously relevant document must still
+ * trigger a workspace scan so stale diagnostics are cleared.
+ */
+const documentRelevance = new Map<string, Map<string, boolean>>();
+const NO_OWNER = '';
+
+function relevanceBucket(ownerId?: string): Map<string, boolean> {
+    const owner = ownerId ?? NO_OWNER;
+    let bucket = documentRelevance.get(owner);
+    if (!bucket) {
+        bucket = new Map<string, boolean>();
+        documentRelevance.set(owner, bucket);
+    }
+    return bucket;
+}
+
+/**
+ * Classifies a document and remembers the result (didOpen). Returns the classification.
+ */
+export function recordDocumentRelevance(document: ScannableDocument, ownerId?: string): boolean {
+    const key = getDocumentKey(document);
+    const relevant = isCandidateForKubernetesScan(document);
+    if (key) {
+        relevanceBucket(ownerId).set(key, relevant);
+    }
+    return relevant;
+}
+
+/**
+ * Forgets the remembered classification of a closed document (didClose).
+ */
+export function forgetDocumentRelevance(docOrUri: ScannableDocument | string, ownerId?: string): void {
+    const key = getDocumentKey(docOrUri);
+    if (key) {
+        documentRelevance.get(ownerId ?? NO_OWNER)?.delete(key);
+    }
+}
+
+/**
+ * Clears every forced-scan attempt and remembered classification owned by one client,
+ * leaving other clients' state untouched.
+ */
+export function clearOwnerState(ownerId: string): void {
+    if (!ownerId) {
+        return;
+    }
+    clearForcedScansForOwner(ownerId);
+    documentRelevance.delete(ownerId);
+}
+
+/**
  * Resets all forced scan overrides and internal caches. Called on client restart and extension deactivation.
  */
 export function resetForceScanState(): void {
     forcedScanAttempts.clear();
+    documentRelevance.clear();
     kustomizeCache.clear();
     helmChartCache.clear();
     templateFileCache.clear();
@@ -320,10 +377,46 @@ export function isScanForcedForDocument(docOrUri: ScannableDocument | string, ow
  * confidently classified as non-Kubernetes. Uncertain/ambiguous files trigger scanning.
  */
 export function shouldScanDocumentOnSave(document: ScannableDocument, ownerId?: string): boolean {
-    if (consumeForceScan(document, ownerId)) {
-        return true;
+    const forced = consumeForceScan(document, ownerId);
+    const current = isCandidateForKubernetesScan(document);
+    // Remember the new classification; a save that removes previously relevant content
+    // must still be forwarded once so the workspace scan can clear stale findings.
+    const key = getDocumentKey(document);
+    let previous: boolean | undefined;
+    if (key) {
+        const bucket = relevanceBucket(ownerId);
+        previous = bucket.get(key);
+        bucket.set(key, current);
     }
-    return isCandidateForKubernetesScan(document);
+    return forced || current || previous === true;
+}
+
+/**
+ * Creates the didOpen middleware that remembers each document's initial classification.
+ */
+export function createDidOpenMiddleware<T extends ScannableDocument = ScannableDocument>(
+    ownerId?: string
+): (data: T, next: (data: T) => Promise<void>) => Promise<void> {
+    return async (data: T, next: (data: T) => Promise<void>) => {
+        try {
+            recordDocumentRelevance(data, ownerId);
+        } catch {
+            // Classification is best-effort; never block the open notification.
+        }
+        return next(data);
+    };
+}
+
+/**
+ * Creates the didClose middleware that drops the remembered classification.
+ */
+export function createDidCloseMiddleware<T extends ScannableDocument = ScannableDocument>(
+    ownerId?: string
+): (data: T, next: (data: T) => Promise<void>) => Promise<void> {
+    return async (data: T, next: (data: T) => Promise<void>) => {
+        forgetDocumentRelevance(data, ownerId);
+        return next(data);
+    };
 }
 
 /**
@@ -470,43 +563,46 @@ export function extractKustomizeReferences(content: string): Set<string> {
     const refs = new Set<string>();
     const lines = content.split(/\r?\n/);
     for (const rawLine of lines) {
-        const commentIdx = rawLine.indexOf('#');
-        const line = (commentIdx >= 0 ? rawLine.slice(0, commentIdx) : rawLine).trim();
-        if (!line) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) {
             continue;
         }
 
-        const candidateTokens: string[] = [];
+        // Raw value texts; each is parsed as a YAML scalar (quotes first, comments after).
+        const valueTexts: string[] = [];
 
         // Match list items, e.g. - "foo.json" or - foo.json
+        let rest = line;
         const listMatch = line.match(/^-\s+(.+)$/);
         if (listMatch) {
-            candidateTokens.push(listMatch[1].trim());
+            rest = listMatch[1].trim();
+            valueTexts.push(rest);
         }
 
-        // Match property assignments, e.g. path: foo.json
-        const propMatch = line.match(/^\w+:\s*(.+)$/);
+        // Match property assignments, e.g. path: foo.json (also "- path: foo.json")
+        const propMatch = rest.match(/^\w+:\s*(.+)$/);
         if (propMatch) {
-            candidateTokens.push(propMatch[1].trim());
+            valueTexts.push(propMatch[1].trim());
         }
 
-        // Match inline array elements [ ... ]
-        const bracketMatch = line.match(/\[(.*)\]/);
-        if (bracketMatch) {
-            for (const item of bracketMatch[1].split(',')) {
-                candidateTokens.push(item.trim());
+        const candidateTokens: string[] = [];
+        for (const text of valueTexts) {
+            if (text.startsWith('[')) {
+                candidateTokens.push(...parseFlowSequence(text));
+            } else {
+                candidateTokens.push(parseYamlScalar(text));
             }
         }
 
         for (let token of candidateTokens) {
-            token = token.replace(/^["']|["']$/g, '').trim();
+            token = token.trim();
             if (!token) {
                 continue;
             }
             // Handle key=path syntax, e.g. config-key=sub/config.json
             const eqIdx = token.indexOf('=');
             if (eqIdx >= 0) {
-                token = token.slice(eqIdx + 1).replace(/^["']|["']$/g, '').trim();
+                token = unquote(token.slice(eqIdx + 1).trim());
             }
             if (token && !token.startsWith('http://') && !token.startsWith('https://')) {
                 // Normalize posix path: collapses '//', resolves './', etc.
@@ -516,6 +612,90 @@ export function extractKustomizeReferences(content: string): Set<string> {
         }
     }
     return refs;
+}
+
+function unquote(value: string): string {
+    return value.replace(/^["']|["']$/g, '').trim();
+}
+
+/**
+ * Reads one quoted scalar starting at text[0] (a quote character).
+ * Returns the unescaped value and the index just past the closing quote, or null if unterminated.
+ */
+function readQuoted(text: string): { value: string; end: number } | null {
+    const quote = text[0];
+    let out = '';
+    for (let i = 1; i < text.length; i++) {
+        const ch = text[i];
+        if (quote === '"' && ch === '\\' && i + 1 < text.length) {
+            out += text[i + 1];
+            i++;
+        } else if (quote === "'" && ch === "'" && text[i + 1] === "'") {
+            out += "'";
+            i++;
+        } else if (ch === quote) {
+            return { value: out, end: i + 1 };
+        } else {
+            out += ch;
+        }
+    }
+    return null;
+}
+
+/**
+ * Parses a single YAML scalar value. Quoted scalars keep any '#' they contain; for plain
+ * scalars a comment only starts at a '#' preceded by whitespace.
+ */
+function parseYamlScalar(text: string): string {
+    const trimmed = text.trim();
+    if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
+        const quoted = readQuoted(trimmed);
+        if (quoted) {
+            return quoted.value;
+        }
+    }
+    const commentIdx = trimmed.search(/(?:^|\s)#/);
+    return (commentIdx >= 0 ? trimmed.slice(0, commentIdx) : trimmed).trim();
+}
+
+/**
+ * Parses a single-line flow sequence such as ["a#b.json", c.json] # comment.
+ */
+function parseFlowSequence(text: string): string[] {
+    const items: string[] = [];
+    let i = 1;
+    let current = '';
+    const flush = () => {
+        if (current.trim()) {
+            items.push(parseYamlScalar(current));
+        }
+        current = '';
+    };
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '"' || ch === "'") {
+            const quoted = readQuoted(text.slice(i));
+            if (!quoted) {
+                current += text.slice(i);
+                break;
+            }
+            current += text.slice(i, i + quoted.end);
+            i += quoted.end;
+            continue;
+        }
+        if (ch === ',') {
+            flush();
+        } else if (ch === ']') {
+            break;
+        } else if (ch === '#' && /\s/.test(text[i - 1] ?? '')) {
+            break;
+        } else {
+            current += ch;
+        }
+        i++;
+    }
+    flush();
+    return items;
 }
 
 /**
@@ -620,17 +800,17 @@ export function analyzeHelmTemplate(content: string): TemplateAnalysis {
     }
 
     // 4. Detect piped .Files invocations, e.g. "path" | .Files.Get
-    if (/\|\s*\.Files\.(?:Get|GetBytes)/.test(content)) {
+    if (/\|\s*\.Files\.(?:GetBytes|Get|Lines)\b/.test(content)) {
         usesGlobOrComputed = true;
     }
 
     // 5. Detect computed/variable arguments, e.g. .Files.Get $var or .Files.Get (printf ...)
-    if (/\.Files\.(?:Get|GetBytes)\s*(\$|\(|\.[a-zA-Z]|[a-zA-Z])/.test(content)) {
+    if (/\.Files\.(?:GetBytes|Get|Lines)\b\s*(\$|\(|\.[a-zA-Z]|[a-zA-Z])/.test(content)) {
         usesGlobOrComputed = true;
     }
 
-    // 6. Direct literal references from .Files.Get / .Files.GetBytes
-    const literalRegex = /\.Files\.(?:Get|GetBytes)\s*\(?\s*["'`]([^"'`]+)["'`]/g;
+    // 6. Direct literal references from .Files.Get / .Files.GetBytes / .Files.Lines
+    const literalRegex = /\.Files\.(?:GetBytes|Get|Lines)\b\s*\(?\s*["'`]([^"'`]+)["'`]/g;
     let match: RegExpExecArray | null;
     while ((match = literalRegex.exec(content)) !== null) {
         const norm = path.posix.normalize(match[1].replace(/\\/g, '/')).replace(/^\.\//, '');

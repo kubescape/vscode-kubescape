@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { shouldScanDocumentOnSave, createDidSaveMiddleware } from '../../server/manifestFilter';
+import { awaitJsonRpcResponse } from './rpcWait';
 
 function encodeFrame(msg: any): Buffer {
     const json = JSON.stringify(msg);
@@ -248,17 +249,10 @@ spec:
             assert.ok(typeof d.range.start.character === 'number', 'Range must have start character');
         }
 
-        // Helper to await matching response message while skipping unrelated notifications
-        const awaitResponse = async (id: number, timeoutMs = 30000): Promise<any> => {
-            const deadline = Date.now() + timeoutMs;
-            while (Date.now() < deadline) {
-                const msg = await nextMessage(15000);
-                if (msg && msg.id === id) {
-                    return msg;
-                }
-            }
-            throw new Error(`Timeout waiting for response id ${id}`);
-        };
+        // Helper to await matching response message while skipping unrelated notifications.
+        // Bounded by one absolute deadline; each wait receives only the remaining time.
+        const awaitResponse = (id: number, timeoutMs = 30000): Promise<any> =>
+            awaitJsonRpcResponse(nextMessage, id, timeoutMs);
 
         // 6. Shutdown
         proc.stdin?.write(encodeFrame({
@@ -464,17 +458,10 @@ resources:
             throw new Error(`Timeout waiting for publishDiagnostics for ${uri}`);
         };
 
-        // Helper to await matching response message while skipping unrelated notifications
-        const awaitResponse = async (id: number, timeoutMs = 30000): Promise<any> => {
-            const deadline = Date.now() + timeoutMs;
-            while (Date.now() < deadline) {
-                const msg = await nextMessage(15000);
-                if (msg && msg.id === id) {
-                    return msg;
-                }
-            }
-            throw new Error(`Timeout waiting for response id ${id}`);
-        };
+        // Helper to await matching response message while skipping unrelated notifications.
+        // Bounded by one absolute deadline; each wait receives only the remaining time.
+        const awaitResponse = (id: number, timeoutMs = 30000): Promise<any> =>
+            awaitJsonRpcResponse(nextMessage, id, timeoutMs);
 
         // Create the actual production save-filtering middleware
         const productionMiddleware = createDidSaveMiddleware(shouldScanDocumentOnSave);

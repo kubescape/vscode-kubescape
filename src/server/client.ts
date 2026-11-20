@@ -11,8 +11,10 @@ import { waitForProcessExit, terminateProcess, isProcessAlive } from './process'
 import {
     shouldScanDocumentOnSave,
     resetForceScanState,
-    clearForcedScansForOwner,
+    clearOwnerState,
     createDidSaveMiddleware,
+    createDidOpenMiddleware,
+    createDidCloseMiddleware,
     ScannableDocument
 } from './manifestFilter';
 
@@ -60,7 +62,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
     private clientFactory: LanguageClientFactory;
     private initTimeoutMs: number;
     private stopTimeoutMs: number;
-    private manifestFilter: (doc: ScannableDocument) => boolean;
+    private manifestFilter?: (doc: ScannableDocument) => boolean;
     private isDisposed: boolean = false;
     private shutdownPromise: Promise<void> | null = null;
     private instanceId: string = 'client_' + Math.random().toString(36).slice(2);
@@ -75,14 +77,13 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             this.clientFactory = optionsOrFactory;
             this.initTimeoutMs = 15000;
             this.stopTimeoutMs = 3000;
-            this.manifestFilter = shouldScanDocumentOnSave;
         } else {
             this.clientFactory =
                 optionsOrFactory?.clientFactory ??
                 ((id, name, sOpts, cOpts) => new LanguageClient(id, name, sOpts, cOpts));
             this.initTimeoutMs = optionsOrFactory?.initTimeoutMs ?? 15000;
             this.stopTimeoutMs = optionsOrFactory?.stopTimeoutMs ?? 3000;
-            this.manifestFilter = optionsOrFactory?.manifestFilter ?? shouldScanDocumentOnSave;
+            this.manifestFilter = optionsOrFactory?.manifestFilter;
         }
     }
 
@@ -174,7 +175,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         }
 
         this.outputChannel.appendLine('[LSP] Restarting Kubescape Language Server...');
-        clearForcedScansForOwner(this.instanceId);
+        clearOwnerState(this.instanceId);
         await this.internalStop();
 
         // Re-check disposed and generation state after stop completes
@@ -226,7 +227,12 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             outputChannel: this.outputChannel,
             traceOutputChannel: this.outputChannel,
             middleware: {
-                didSave: createDidSaveMiddleware<vscode.TextDocument>(this.manifestFilter, this.outputChannel),
+                didOpen: createDidOpenMiddleware<vscode.TextDocument>(this.instanceId),
+                didClose: createDidCloseMiddleware<vscode.TextDocument>(this.instanceId),
+                didSave: createDidSaveMiddleware<vscode.TextDocument>(
+                    this.manifestFilter ?? ((doc) => shouldScanDocumentOnSave(doc, this.instanceId)),
+                    this.outputChannel
+                ),
             },
             errorHandler: {
                 error: (error, message, count) => {
@@ -404,7 +410,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             return;
         }
         this.isDisposed = true;
-        clearForcedScansForOwner(this.instanceId);
+        clearOwnerState(this.instanceId);
         resetForceScanState();
         if (this.shutdownPromise) {
             this.shutdownPromise.then(
