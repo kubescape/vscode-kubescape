@@ -20,12 +20,15 @@ import {
     createDidOpenMiddleware,
     createDidCloseMiddleware,
     extractKustomizeReferences,
+    analyzeKustomization,
+    recordDocumentRelevance,
+    DOCUMENT_SELECTOR,
     analyzeHelmTemplate,
     setTimeProvider,
     resetTimeProvider,
     ScannableDocument,
 } from '../../server/manifestFilter';
-import { awaitJsonRpcResponse } from './rpcWait';
+import { awaitJsonRpcMessage, awaitJsonRpcResponse, awaitDiagnosticsForUri, isJsonRpcResponse } from './rpcWait';
 
 describe('LSP Save-Time Scoped Scanning & Filter Tests (Second-Pass Audit)', () => {
     beforeEach(() => {
@@ -1228,6 +1231,37 @@ data:
             }
         });
 
+        it('consumeForceScan itself rejects and cleans up an expired attempt without a prior isScanForced check', () => {
+            let mockTime = 500000;
+            setTimeProvider(() => mockTime);
+            try {
+                const expiring: ScannableDocument = {
+                    uri: { scheme: 'file', fsPath: '/workspace/direct-expired.yaml' },
+                    languageId: 'yaml',
+                    fileName: '/workspace/direct-expired.yaml',
+                    getText: () => 'tool: custom',
+                };
+                forceScanForDocument(expiring, undefined, 5000); // unmanaged / inactive attempt
+                mockTime += 6000; // beyond expiry
+
+                // Direct consumption, deliberately NOT preceded by isScanForcedForDocument()
+                assert.strictEqual(consumeForceScan(expiring), false, 'Expired attempt must not be consumable');
+
+                // The entry was removed: even with the clock rewound before expiry nothing is pending
+                mockTime -= 6000;
+                assert.strictEqual(isScanForcedForDocument(expiring), false, 'Expired entry must have been cleaned up');
+                assert.strictEqual(consumeForceScan(expiring), false);
+
+                // Pre-expiry control case on a separate attempt still consumes exactly once
+                forceScanForDocument(expiring, undefined, 5000);
+                mockTime += 4000;
+                assert.strictEqual(consumeForceScan(expiring), true);
+                assert.strictEqual(consumeForceScan(expiring), false);
+            } finally {
+                resetTimeProvider();
+            }
+        });
+
         it('clears pending forced scans for retiring client without clearing a new client active attempt (Finding A2)', () => {
             const retiringClientId = 'client_retiring_123';
             const newClientId = 'client_active_456';
@@ -1559,18 +1593,20 @@ data:
         });
 
         it('clears only the retiring client\'s remembered state', async () => {
-            const a = mutableDoc('/ws/mr/own.yaml', POD);
+            const shared = mutableDoc('/ws/mr/own.yaml', POD);
             const pa = pipeline('client_a');
             const pb = pipeline('client_b');
-            await pa.open(a.doc);
-            await pb.open(a.doc);
+
+            // Prime both clients' relevance before cleanup
+            await pa.open(shared.doc);
+            await pb.open(shared.doc);
+
             clearOwnerState('client_a');
-            a.state.text = 'foo: bar\n';
-            assert.strictEqual(await pa.save(a.doc), false, 'retired client state was cleared');
-            a.state.text = POD;
-            await pb.save(a.doc); // client_b remembers relevance
-            a.state.text = 'foo: bar\n';
-            assert.strictEqual(await pb.save(a.doc), true, 'other client keeps its state');
+
+            // No further priming of client_b: both clients now save the same unrelated content
+            shared.state.text = 'foo: bar\n';
+            assert.strictEqual(await pa.save(shared.doc), false, 'client_a has no prior relevant state after cleanup');
+            assert.strictEqual(await pb.save(shared.doc), true, 'client_b still remembers its prior relevant state');
         });
 
         it('a valid forced scan still forwards an unrelated document', async () => {
@@ -1740,7 +1776,7 @@ data:
 
     describe('JSON-RPC response wait uses one absolute deadline', () => {
         it('returns the matching response while skipping notifications and other ids', async () => {
-            const queue: any[] = [{ method: 'n' }, { id: 9 }, { id: 2, result: null }];
+            const queue: any[] = [{ method: 'n' }, { id: 9, result: null }, { id: 2, result: null }];
             const res = await awaitJsonRpcResponse(async () => queue.shift(), 2, 30000);
             assert.strictEqual(res.id, 2);
         });
@@ -1763,7 +1799,7 @@ data:
             const next = async (timeoutMs: number) => {
                 seen = timeoutMs;
                 t += 20000;
-                return { id: 5 };
+                return { id: 5, result: null };
             };
             const res = await awaitJsonRpcResponse(next, 5, 30000, () => t);
             assert.strictEqual(res.id, 5);
@@ -1777,6 +1813,386 @@ data:
                 throw new Error('Timeout waiting for LSP message');
             };
             await assert.rejects(awaitJsonRpcResponse(next, 3, 30000, () => t), /Timeout waiting for response id 3/);
+        });
+    });
+
+    describe('Dirty-buffer baseline seeding (client restart replaying didOpen)', () => {
+        const OWNER = 'client_dirty';
+        const POD = 'apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\n';
+        let dir: string;
+        before(() => {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ks-dirty-'));
+        });
+        after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+        function diskDoc(name: string, disk: string | null, buffer: string, dirty: boolean) {
+            const file = path.join(dir, name);
+            if (disk !== null) {
+                fs.writeFileSync(file, disk);
+            }
+            const state = { text: buffer, dirty };
+            const doc: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: file, toString: () => `file://${file}` },
+                languageId: 'yaml',
+                fileName: file,
+                get isDirty() {
+                    return state.dirty;
+                },
+                getText: () => state.text,
+            };
+            return { doc, state, file };
+        }
+
+        const save = createDidSaveMiddleware((d) => shouldScanDocumentOnSave(d, OWNER));
+        const open = createDidOpenMiddleware(OWNER);
+        const run = async (mw: any, d: ScannableDocument) => {
+            let forwarded = false;
+            await mw(d, async () => { forwarded = true; });
+            return forwarded;
+        };
+
+        it('clean documents are classified directly from the buffer (fast path)', async () => {
+            const relevant = diskDoc('clean-pod.yaml', POD, POD, false);
+            const unrelated = diskDoc('clean-plain.yaml', 'foo: bar\n', 'foo: bar\n', false);
+            assert.strictEqual(recordDocumentRelevance(relevant.doc, OWNER), true);
+            assert.strictEqual(recordDocumentRelevance(unrelated.doc, OWNER), false);
+        });
+
+        it('dirty buffer with a relevant saved disk version seeds a relevant baseline', async () => {
+            const d = diskDoc('dirty-rel.yaml', POD, 'foo: bar\n', true);
+            await run(open, d.doc);
+            d.state.dirty = false; // user saves the edited buffer
+            assert.strictEqual(await run(save, d.doc), true, 'removal of the Pod must be forwarded');
+        });
+
+        it('dirty Pod removal (empty buffer) followed by save still forwards', async () => {
+            const d = diskDoc('dirty-empty.yaml', POD, '', true);
+            await run(open, d.doc);
+            d.state.dirty = false;
+            assert.strictEqual(await run(save, d.doc), true);
+        });
+
+        it('dirty buffer with an unrelated saved disk version is not seeded from the buffer', async () => {
+            const d = diskDoc('dirty-unrel.yaml', 'foo: bar\n', POD, true);
+            await run(open, d.doc);
+            d.state.text = 'foo: baz\n';
+            d.state.dirty = false;
+            assert.strictEqual(await run(save, d.doc), false, 'baseline came from disk (unrelated), not the Pod buffer');
+        });
+
+        it('an unreadable saved version yields an unknown baseline and the next save is forwarded once', async () => {
+            const d = diskDoc('never-written.yaml', null, 'foo: bar\n', true);
+            await run(open, d.doc);
+            assert.strictEqual(recordDocumentRelevance(d.doc, OWNER), 'unknown');
+            d.state.dirty = false;
+            assert.strictEqual(await run(save, d.doc), true, 'unknown baseline is conservatively forwarded');
+            assert.strictEqual(await run(save, d.doc), false, 'baseline refreshed after the processed save');
+        });
+
+        it('does not overwrite a known saved baseline with an unsaved buffer classification', async () => {
+            const d = diskDoc('keep-baseline.yaml', POD, POD, false);
+            await run(open, d.doc); // known relevant baseline
+            d.state.dirty = true;
+            d.state.text = 'foo: bar\n';
+            await run(open, d.doc); // replayed dirty didOpen without a restart
+            d.state.dirty = false;
+            assert.strictEqual(await run(save, d.doc), true);
+        });
+
+        it('repeated restart/open/save cycles do not retain stale classifications', async () => {
+            const d = diskDoc('cycle.yaml', POD, POD, false);
+            for (let i = 0; i < 3; i++) {
+                clearOwnerState(OWNER); // client restart / dispose
+                d.state.dirty = false;
+                fs.writeFileSync(d.file, POD);
+                d.state.text = POD;
+                await run(open, d.doc);
+                assert.strictEqual(await run(save, d.doc), true, 'manifest saves forwarded');
+
+                // Pod removed and saved to disk
+                fs.writeFileSync(d.file, 'foo: bar\n');
+                d.state.text = 'foo: bar\n';
+                assert.strictEqual(await run(save, d.doc), true, 'removal forwarded once');
+                assert.strictEqual(await run(save, d.doc), false, 'then unrelated saves are suppressed');
+
+                // Restart with an unrelated saved file: nothing stale remains from the Pod era
+                clearOwnerState(OWNER);
+                await run(open, d.doc);
+                assert.strictEqual(await run(save, d.doc), false, 'no stale relevance after restart');
+            }
+        });
+    });
+
+    describe('JSONC dependency saves reach the filter', () => {
+        let dir: string;
+        before(() => {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ks-jsonc-'));
+            fs.writeFileSync(
+                path.join(dir, 'kustomization.yaml'),
+                'configMapGenerator:\n- name: cm\n  files:\n  - typedoc.json\n'
+            );
+            fs.writeFileSync(path.join(dir, 'typedoc.json'), '{\n  // comment\n  "entryPoints": ["src"],\n}\n');
+            fs.writeFileSync(path.join(dir, 'unrelated.json'), '{\n  // comment\n  "a": 1,\n}\n');
+            fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"x"}');
+        });
+        after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+        function jsoncDoc(name: string, languageId = 'jsonc'): ScannableDocument {
+            const file = path.join(dir, name);
+            return {
+                uri: { scheme: 'file', fsPath: file, toString: () => `file://${file}` },
+                languageId,
+                fileName: file,
+                getText: () => fs.readFileSync(file, 'utf8'),
+            };
+        }
+
+        it('the client document selector synchronizes yaml, json and jsonc file documents', () => {
+            const langs = DOCUMENT_SELECTOR.map((d) => `${d.scheme}:${d.language}`).sort();
+            assert.deepStrictEqual(langs, ['file:json', 'file:jsonc', 'file:yaml']);
+        });
+
+        it('forwards a save of a Kustomize-referenced JSONC file', async () => {
+            const mw = createDidSaveMiddleware((d) => shouldScanDocumentOnSave(d, 'jsonc'));
+            let forwarded = false;
+            await mw(jsoncDoc('typedoc.json') as any, async () => { forwarded = true; });
+            assert.strictEqual(forwarded, true);
+        });
+
+        it('suppresses a save of an unrelated JSONC file', async () => {
+            const mw = createDidSaveMiddleware((d) => shouldScanDocumentOnSave(d, 'jsonc'));
+            let forwarded = false;
+            await mw(jsoncDoc('unrelated.json') as any, async () => { forwarded = true; });
+            assert.strictEqual(forwarded, false);
+        });
+
+        it('matching stays exact for JSONC and existing JSON/YAML behavior is unchanged', () => {
+            assert.strictEqual(isCandidateForKubernetesScan(jsoncDoc('typedoc.json', 'json')), true);
+            assert.strictEqual(isCandidateForKubernetesScan(jsoncDoc('package.json', 'json')), false);
+            assert.strictEqual(isCandidateForKubernetesScan({
+                uri: { scheme: 'file', fsPath: '/ws/a.yaml' }, languageId: 'yaml', fileName: '/ws/a.yaml',
+                getText: () => 'foo: bar\n',
+            }), false);
+            assert.strictEqual(isCandidateForKubernetesScan({
+                uri: { scheme: 'file', fsPath: '/ws/pod.yaml' }, languageId: 'yaml', fileName: '/ws/pod.yaml',
+                getText: () => 'apiVersion: v1\nkind: Pod\n',
+            }), true);
+        });
+    });
+
+    describe('Multiline Kustomize flow sequences', () => {
+        it('finds files in a multiline files: [...] sequence', () => {
+            const refs = extractKustomizeReferences(
+                'configMapGenerator:\n  - name: app-config\n    files: [\n      "settings.json",\n      "logging.json"\n    ]\n'
+            );
+            assert.ok(refs.has('settings.json'));
+            assert.ok(refs.has('logging.json'));
+            assert.strictEqual(analyzeKustomization('x:\n  files: [\n  "a.json"\n  ]\n').uncertain, false);
+        });
+
+        it('finds envs in a multiline envs: [...] sequence', () => {
+            const refs = extractKustomizeReferences('secretGenerator:\n- name: s\n  envs: [\n    .env.prod,\n    .env.dev\n  ]\n');
+            assert.ok(refs.has('.env.prod'));
+            assert.ok(refs.has('.env.dev'));
+        });
+
+        it('handles multiple entries on one line and across lines', () => {
+            const refs = extractKustomizeReferences('files: [a.json, b.json,\n  c.json]\n');
+            for (const f of ['a.json', 'b.json', 'c.json']) {
+                assert.ok(refs.has(f), f);
+            }
+        });
+
+        it('keeps # and spaces inside quoted entries and ignores comments between entries', () => {
+            const refs = extractKustomizeReferences(
+                'files: [\n  "settings#prod.json", # first\n  # whole-line comment\n  "my dir/a #1.json",\n  plain.json # trailing\n]\n'
+            );
+            assert.ok(refs.has('settings#prod.json'));
+            assert.ok(refs.has('my dir/a #1.json'));
+            assert.ok(refs.has('plain.json'));
+            assert.ok(![...refs].some((r) => r.includes('comment') || r.includes('first')));
+        });
+
+        it('block sequences still work', () => {
+            const a = analyzeKustomization('resources:\n- a.yaml\n- "b#1.yaml" # c\nconfigMapGenerator:\n- name: x\n  files:\n  - k=c.json\n');
+            assert.deepStrictEqual([...a.references].filter((r) => /\.(yaml|json)$/.test(r)).sort(), ['a.yaml', 'b#1.yaml', 'c.json']);
+            assert.strictEqual(a.uncertain, false);
+        });
+
+        describe('on disk', () => {
+            let dir: string;
+            before(() => {
+                dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ks-kz-multi-'));
+                fs.mkdirSync(path.join(dir, 'other'));
+                fs.mkdirSync(path.join(dir, 'broken'));
+                for (const f of ['settings.json', 'logging.json', path.join('other', 'settings.json')]) {
+                    fs.writeFileSync(path.join(dir, f), '{}');
+                }
+                fs.writeFileSync(
+                    path.join(dir, 'kustomization.yaml'),
+                    'configMapGenerator:\n  - name: app-config\n    files: [\n      "settings.json",\n      "logging.json"\n    ]\n'
+                );
+                // Unterminated flow sequence: unsupported/malformed
+                fs.writeFileSync(path.join(dir, 'broken', 'kustomization.yaml'), 'configMapGenerator:\n- name: x\n  files: [\n    "a.json",\n');
+                fs.writeFileSync(path.join(dir, 'broken', 'whatever.json'), '{}');
+            });
+            after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+            it('detects both referenced files and keeps same-basename files elsewhere distinct', () => {
+                assert.strictEqual(isKustomizeDependency(path.join(dir, 'settings.json')), true);
+                assert.strictEqual(isKustomizeDependency(path.join(dir, 'logging.json')), true);
+                assert.strictEqual(isKustomizeDependency(path.join(dir, 'other', 'settings.json')), false);
+            });
+
+            it('malformed or unsupported YAML is uncertain rather than a false negative', () => {
+                assert.strictEqual(analyzeKustomization('files: [\n"a.json",\n').uncertain, true);
+                assert.strictEqual(analyzeKustomization('files: [[a.json], [b.json]]\n').uncertain, true);
+                assert.strictEqual(analyzeKustomization('files: ["a.json\n').uncertain, true);
+                assert.strictEqual(isKustomizeDependency(path.join(dir, 'broken', 'whatever.json')), true);
+            });
+        });
+    });
+
+    describe('Helm template discovery regardless of suffix', () => {
+        let root: string;
+        before(() => {
+            root = fs.mkdtempSync(path.join(os.tmpdir(), 'ks-helm-suffix-'));
+        });
+        after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+        function makeChart(name: string) {
+            const dir = path.join(root, name);
+            fs.mkdirSync(path.join(dir, 'templates'), { recursive: true });
+            fs.writeFileSync(path.join(dir, 'Chart.yaml'), 'apiVersion: v2\nname: c\nversion: 1.0.0\n');
+            for (const f of ['settings.json', 'other.json']) {
+                fs.writeFileSync(path.join(dir, f), '{}');
+            }
+            return dir;
+        }
+
+        it('analyzes helper files such as templates/_config.txt included by a template', () => {
+            const dir = makeChart('txt-helper');
+            fs.writeFileSync(path.join(dir, 'templates', '_config.txt'), '{{- define "app.cfg" -}}{{ .Files.Get "settings.json" }}{{- end -}}\n');
+            fs.writeFileSync(
+                path.join(dir, 'templates', 'cm.yaml'),
+                'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\ndata:\n  cfg: |-\n    {{ include "app.cfg" . }}\n'
+            );
+            assert.strictEqual(isHelmDependency(path.join(dir, 'settings.json')), true, 'saving the referenced file forwards');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'other.json')), false, 'unrelated file remains suppressed');
+        });
+
+        it('does not treat files outside templates/ as templates', () => {
+            const dir = makeChart('outside');
+            fs.writeFileSync(path.join(dir, 'notes.txt'), '{{ .Files.Get "settings.json" }}');
+            fs.writeFileSync(path.join(dir, 'templates', 'cm.yaml'), 'apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cm\n');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'settings.json')), false);
+        });
+
+        it('keeps analyzing .yaml, .yml and .tpl templates', () => {
+            for (const ext of ['yaml', 'yml', 'tpl']) {
+                const dir = makeChart(`ext-${ext}`);
+                fs.writeFileSync(path.join(dir, 'templates', `t.${ext}`), '{{ .Files.Get "settings.json" }}\n');
+                assert.strictEqual(isHelmDependency(path.join(dir, 'settings.json')), true, ext);
+                assert.strictEqual(isHelmDependency(path.join(dir, 'other.json')), false, ext);
+            }
+        });
+
+        it('invalidates cached analysis when a suffix-less helper changes', () => {
+            const dir = makeChart('invalidate');
+            const helper = path.join(dir, 'templates', '_helpers.txt');
+            fs.writeFileSync(helper, '{{ .Files.Get "settings.json" }}\n');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'settings.json')), true);
+            assert.strictEqual(isHelmDependency(path.join(dir, 'other.json')), false);
+            fs.writeFileSync(helper, '{{ .Files.Lines "other.json" }}\n');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'settings.json')), false);
+            assert.strictEqual(isHelmDependency(path.join(dir, 'other.json')), true);
+        });
+
+        it('still treats dynamic references in suffix-less helpers conservatively', () => {
+            const dir = makeChart('dynamic');
+            fs.writeFileSync(path.join(dir, 'templates', '_dyn.txt'), '{{ .Files.Get (printf "%s.json" .Values.n) }}\n');
+            assert.strictEqual(isHelmDependency(path.join(dir, 'other.json')), true);
+        });
+    });
+
+    describe('JSON-RPC wait helpers: response shape and absolute deadlines', () => {
+        const feed = (msgs: any[], advance = 0) => {
+            let t = 0;
+            const budgets: number[] = [];
+            const next = async (timeoutMs: number) => {
+                budgets.push(timeoutMs);
+                t += advance;
+                const m = msgs.shift();
+                if (m === undefined) {
+                    t += timeoutMs;
+                    throw new Error('Timeout waiting for LSP message');
+                }
+                return m;
+            };
+            return { next, now: () => t, budgets };
+        };
+
+        it('ignores a matching id that carries a method (request/notification)', async () => {
+            const f = feed([{ id: 2, method: 'client/registerCapability' }, { id: 2, result: null }]);
+            const res = await awaitJsonRpcResponse(f.next, 2, 30000, f.now);
+            assert.strictEqual(res.result, null);
+            assert.strictEqual(f.budgets.length, 2);
+        });
+
+        it('accepts result and result: null', async () => {
+            assert.deepStrictEqual(await awaitJsonRpcResponse(feed([{ id: 1, result: { ok: true } }]).next, 1), { id: 1, result: { ok: true } });
+            assert.strictEqual((await awaitJsonRpcResponse(feed([{ id: 1, result: null }]).next, 1)).result, null);
+        });
+
+        it('accepts an error response', async () => {
+            const res = await awaitJsonRpcResponse(feed([{ id: 3, error: { code: -1, message: 'x' } }]).next, 3);
+            assert.strictEqual(res.error.code, -1);
+        });
+
+        it('ignores a response with another id', async () => {
+            const f = feed([{ id: 9, result: 1 }, { id: 4, result: 2 }]);
+            assert.strictEqual((await awaitJsonRpcResponse(f.next, 4, 30000, f.now)).result, 2);
+        });
+
+        it('isJsonRpcResponse enforces the shape', () => {
+            assert.strictEqual(isJsonRpcResponse({ id: 1 }, 1), false);
+            assert.strictEqual(isJsonRpcResponse({ id: 1, method: 'm', result: 1 }, 1), false);
+            assert.strictEqual(isJsonRpcResponse({ id: 1, result: null }, 1), true);
+            assert.strictEqual(isJsonRpcResponse({ id: 1, error: {} }, 1), true);
+            assert.strictEqual(isJsonRpcResponse({ id: 2, result: 1 }, 1), false);
+        });
+
+        it('ignored messages do not reset the deadline and repeated reads cannot extend it', async () => {
+            const noise = Array.from({ length: 50 }, () => ({ method: 'noise' }));
+            const f = feed(noise, 10000);
+            await assert.rejects(awaitJsonRpcResponse(f.next, 1, 30000, f.now), /Timeout waiting for response id 1/);
+            assert.deepStrictEqual(f.budgets, [30000, 20000, 10000]);
+        });
+
+        it('diagnostics wait: skips other URIs and succeeds before the deadline', async () => {
+            const f = feed([
+                { method: 'textDocument/publishDiagnostics', params: { uri: 'file:///other', diagnostics: [1] } },
+                { method: 'window/logMessage' },
+                { method: 'textDocument/publishDiagnostics', params: { uri: 'file:///pod', diagnostics: [1, 2] } },
+            ], 1000);
+            const diags = await awaitDiagnosticsForUri(f.next, 'file:///pod', 90000, f.now);
+            assert.deepStrictEqual(diags, [1, 2]);
+            assert.deepStrictEqual(f.budgets, [90000, 89000, 88000]);
+        });
+
+        it('diagnostics wait: a matching message arriving after the deadline is not accepted', async () => {
+            let t = 0;
+            const next = async () => {
+                t += 91000; // read completes after the 90s deadline
+                return { method: 'textDocument/publishDiagnostics', params: { uri: 'file:///pod', diagnostics: [1] } };
+            };
+            await assert.rejects(awaitDiagnosticsForUri(next, 'file:///pod', 90000, () => t), /Timeout waiting for publishDiagnostics/);
+        });
+
+        it('generic wait: unrelated messages near the deadline cannot extend it', async () => {
+            const f = feed(Array.from({ length: 10 }, () => ({ method: 'n' })), 29000);
+            await assert.rejects(awaitJsonRpcMessage(f.next, () => false, 'thing', 30000, f.now), /Timeout waiting for thing/);
+            assert.deepStrictEqual(f.budgets, [30000, 1000]);
         });
     });
 });

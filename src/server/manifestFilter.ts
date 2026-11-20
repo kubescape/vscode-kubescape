@@ -10,8 +10,23 @@ export interface ScannableDocument {
     readonly uri: { scheme: string; fsPath?: string; path?: string; toString?(): string };
     readonly languageId: string;
     readonly fileName: string;
+    /** True when the editor buffer has unsaved changes (vscode.TextDocument.isDirty). */
+    readonly isDirty?: boolean;
     getText(): string;
 }
+
+/**
+ * Documents synchronized with the language server. 'jsonc' is included because VS Code
+ * assigns that language id to some *.json files (e.g. typedoc.json); without it their saves
+ * never reach the didSave filter even when a Kustomize generator or Helm template consumes
+ * them. The server scans the workspace directory from disk on save, so synchronizing a
+ * JSONC document does not make the server scan its buffer as a separate manifest.
+ */
+export const DOCUMENT_SELECTOR = [
+    { scheme: 'file', language: 'yaml' },
+    { scheme: 'file', language: 'json' },
+    { scheme: 'file', language: 'jsonc' },
+];
 
 /**
  * Known filenames that belong to Kustomize or Helm configuration and directly
@@ -283,14 +298,15 @@ export function consumeForceScan(docOrUri: ScannableDocument | string, ownerId?:
  * A save that removes the Kubernetes content from a previously relevant document must still
  * trigger a workspace scan so stale diagnostics are cleared.
  */
-const documentRelevance = new Map<string, Map<string, boolean>>();
+type Relevance = boolean | 'unknown';
+const documentRelevance = new Map<string, Map<string, Relevance>>();
 const NO_OWNER = '';
 
-function relevanceBucket(ownerId?: string): Map<string, boolean> {
+function relevanceBucket(ownerId?: string): Map<string, Relevance> {
     const owner = ownerId ?? NO_OWNER;
     let bucket = documentRelevance.get(owner);
     if (!bucket) {
-        bucket = new Map<string, boolean>();
+        bucket = new Map<string, Relevance>();
         documentRelevance.set(owner, bucket);
     }
     return bucket;
@@ -299,13 +315,43 @@ function relevanceBucket(ownerId?: string): Map<string, boolean> {
 /**
  * Classifies a document and remembers the result (didOpen). Returns the classification.
  */
-export function recordDocumentRelevance(document: ScannableDocument, ownerId?: string): boolean {
+export function recordDocumentRelevance(document: ScannableDocument, ownerId?: string): Relevance {
     const key = getDocumentKey(document);
-    const relevant = isCandidateForKubernetesScan(document);
-    if (key) {
-        relevanceBucket(ownerId).set(key, relevant);
+    if (!document.isDirty) {
+        // Clean buffer == saved version: fast path.
+        const relevant = isCandidateForKubernetesScan(document);
+        if (key) {
+            relevanceBucket(ownerId).set(key, relevant);
+        }
+        return relevant;
     }
-    return relevant;
+
+    // Dirty buffer (e.g. didOpen replayed after a client restart): the baseline must describe
+    // the last SAVED version, so never trust the unsaved buffer.
+    if (key) {
+        const existing = relevanceBucket(ownerId).get(key);
+        if (existing !== undefined) {
+            return existing; // keep the known saved baseline
+        }
+    }
+    let baseline: Relevance;
+    try {
+        const diskPath = document.uri?.fsPath || document.fileName;
+        const diskText = fs.readFileSync(diskPath, 'utf8');
+        baseline = isCandidateForKubernetesScan({
+            uri: document.uri,
+            languageId: document.languageId,
+            fileName: document.fileName,
+            getText: () => diskText,
+        });
+    } catch {
+        // Saved version unreadable: unknown, so the next save is conservatively forwarded.
+        baseline = 'unknown';
+    }
+    if (key) {
+        relevanceBucket(ownerId).set(key, baseline);
+    }
+    return baseline;
 }
 
 /**
@@ -382,13 +428,13 @@ export function shouldScanDocumentOnSave(document: ScannableDocument, ownerId?: 
     // Remember the new classification; a save that removes previously relevant content
     // must still be forwarded once so the workspace scan can clear stale findings.
     const key = getDocumentKey(document);
-    let previous: boolean | undefined;
+    let previous: Relevance | undefined;
     if (key) {
         const bucket = relevanceBucket(ownerId);
         previous = bucket.get(key);
         bucket.set(key, current);
     }
-    return forced || current || previous === true;
+    return forced || current || previous === true || previous === 'unknown';
 }
 
 /**
@@ -485,7 +531,7 @@ export function isCandidateForKubernetesScan(document: ScannableDocument): boole
     // 4. Must match supported languages (YAML or JSON)
     const lang = document.languageId;
     const isYaml = lang === 'yaml' || lowerBasename.endsWith('.yaml') || lowerBasename.endsWith('.yml');
-    const isJson = lang === 'json' || lowerBasename.endsWith('.json');
+    const isJson = lang === 'json' || lang === 'jsonc' || lowerBasename.endsWith('.json') || lowerBasename.endsWith('.jsonc');
 
     if (!isYaml && !isJson) {
         return false;
@@ -555,14 +601,86 @@ export function isCandidateForKubernetesScan(document: ScannableDocument): boole
 }
 
 /**
- * Extracts referenced file paths from a Kustomize configuration.
- * Handles generators (files, envs), resources, patches, and component lists.
- * Normalizes all paths relative to the kustomization directory and ignores URL schemes.
+ * Result of analyzing a Kustomization file. When `uncertain` is true the file contained a
+ * construct this lightweight scanner cannot interpret reliably (for example an unterminated
+ * flow sequence or quote), so callers must conservatively treat every file below it as a
+ * possible dependency instead of risking a false negative.
  */
-export function extractKustomizeReferences(content: string): Set<string> {
+export interface KustomizeAnalysis {
+    references: Set<string>;
+    uncertain: boolean;
+}
+
+/**
+ * Splits content into logical lines: comments outside quoted scalars are removed, and a line that
+ * leaves a quoted scalar or a `[` flow sequence open is joined with the following lines.
+ * This is intentionally not a general YAML parser.
+ */
+function toLogicalLines(content: string): { lines: string[]; uncertain: boolean } {
+    const lines: string[] = [];
+    let acc = '';
+    let depth = 0;
+    let quote = '';
+    const isStart = (prev: string | undefined) => prev === undefined || /[\s\[\{,:-]/.test(prev);
+
+    for (const raw of content.split(/\r?\n/)) {
+        let out = '';
+        for (let i = 0; i < raw.length; i++) {
+            const ch = raw[i];
+            const prev = i > 0 ? raw[i - 1] : undefined;
+            if (quote) {
+                out += ch;
+                if (quote === '"' && ch === '\\' && i + 1 < raw.length) {
+                    out += raw[++i];
+                } else if (ch === quote) {
+                    if (quote === "'" && raw[i + 1] === "'") {
+                        out += raw[++i];
+                    } else {
+                        quote = '';
+                    }
+                }
+                continue;
+            }
+            if ((ch === '"' || ch === "'") && (prev === undefined || /[\s\[\{,]/.test(prev))) {
+                quote = ch;
+            } else if (ch === '#' && (prev === undefined || /\s/.test(prev))) {
+                break; // comment outside any quoted scalar
+            } else if (ch === '[' && (depth > 0 || isStart(prev))) {
+                depth++;
+            } else if (ch === ']' && depth > 0) {
+                depth--;
+            }
+            out += ch;
+        }
+        acc += out;
+        if (depth > 0 || quote) {
+            acc += ' ';
+            continue;
+        }
+        lines.push(acc);
+        acc = '';
+    }
+    let uncertain = false;
+    if (acc.trim()) {
+        // Unterminated flow sequence or quoted scalar at end of input
+        lines.push(acc);
+        uncertain = true;
+    }
+    return { lines, uncertain };
+}
+
+/**
+ * Extracts referenced file paths from a Kustomize configuration and reports whether the
+ * analysis is uncertain. Handles block and (multiline) flow sequences, generators (files,
+ * envs), resources, patches and component lists. Normalizes all paths relative to the
+ * kustomization directory and ignores URL schemes.
+ */
+export function analyzeKustomization(content: string): KustomizeAnalysis {
     const refs = new Set<string>();
-    const lines = content.split(/\r?\n/);
-    for (const rawLine of lines) {
+    const logical = toLogicalLines(content);
+    let uncertain = logical.uncertain;
+
+    for (const rawLine of logical.lines) {
         const line = rawLine.trim();
         if (!line || line.startsWith('#')) {
             continue;
@@ -588,7 +706,11 @@ export function extractKustomizeReferences(content: string): Set<string> {
         const candidateTokens: string[] = [];
         for (const text of valueTexts) {
             if (text.startsWith('[')) {
-                candidateTokens.push(...parseFlowSequence(text));
+                const flow = parseFlowSequence(text);
+                candidateTokens.push(...flow.items);
+                if (flow.uncertain) {
+                    uncertain = true;
+                }
             } else {
                 candidateTokens.push(parseYamlScalar(text));
             }
@@ -611,7 +733,14 @@ export function extractKustomizeReferences(content: string): Set<string> {
             }
         }
     }
-    return refs;
+    return { references: refs, uncertain };
+}
+
+/**
+ * Convenience wrapper returning only the discovered references.
+ */
+export function extractKustomizeReferences(content: string): Set<string> {
+    return analyzeKustomization(content).references;
 }
 
 function unquote(value: string): string {
@@ -659,10 +788,13 @@ function parseYamlScalar(text: string): string {
 }
 
 /**
- * Parses a single-line flow sequence such as ["a#b.json", c.json] # comment.
+ * Parses a flow sequence such as ["a#b.json", c.json] (already joined onto one line).
+ * Nested collections or a missing closing bracket make the result uncertain.
  */
-function parseFlowSequence(text: string): string[] {
+function parseFlowSequence(text: string): { items: string[]; uncertain: boolean } {
     const items: string[] = [];
+    let uncertain = false;
+    let closed = false;
     let i = 1;
     let current = '';
     const flush = () => {
@@ -673,9 +805,11 @@ function parseFlowSequence(text: string): string[] {
     };
     while (i < text.length) {
         const ch = text[i];
-        if (ch === '"' || ch === "'") {
+        const prev = i > 1 ? text[i - 1] : undefined;
+        if ((ch === '"' || ch === "'") && (prev === undefined || /[\s,]/.test(prev))) {
             const quoted = readQuoted(text.slice(i));
             if (!quoted) {
+                uncertain = true;
                 current += text.slice(i);
                 break;
             }
@@ -686,8 +820,12 @@ function parseFlowSequence(text: string): string[] {
         if (ch === ',') {
             flush();
         } else if (ch === ']') {
+            closed = true;
             break;
-        } else if (ch === '#' && /\s/.test(text[i - 1] ?? '')) {
+        } else if (ch === '[' || ch === '{') {
+            uncertain = true;
+            current += ch;
+        } else if (ch === '#' && prev !== undefined && /\s/.test(prev)) {
             break;
         } else {
             current += ch;
@@ -695,7 +833,10 @@ function parseFlowSequence(text: string): string[] {
         i++;
     }
     flush();
-    return items;
+    if (!closed) {
+        uncertain = true;
+    }
+    return { items, uncertain };
 }
 
 /**
@@ -707,6 +848,7 @@ const MAX_SEARCH_DEPTH = 8;
 interface KustomizeCacheEntry {
     contentHash: string;
     references: Set<string>;
+    uncertain: boolean;
 }
 
 interface TemplateAnalysis {
@@ -737,10 +879,12 @@ function computeSha256(content: string): string {
 }
 
 /**
- * Recursively locates template files inside a Helm templates directory.
+ * Recursively locates the files Helm loads as templates. Helm treats every file under the
+ * chart's templates/ directory as a template regardless of its suffix (for example helper
+ * files such as _config.txt or NOTES.txt), so no extension allowlist is applied.
  */
 function findTemplateFiles(dir: string, depth = 0): string[] {
-    if (depth > 3 || !fs.existsSync(dir)) {
+    if (depth > MAX_SEARCH_DEPTH || !fs.existsSync(dir)) {
         return [];
     }
     const results: string[] = [];
@@ -751,10 +895,7 @@ function findTemplateFiles(dir: string, depth = 0): string[] {
             if (entry.isDirectory()) {
                 results.push(...findTemplateFiles(fullPath, depth + 1));
             } else if (entry.isFile()) {
-                const lower = entry.name.toLowerCase();
-                if (lower.endsWith('.yaml') || lower.endsWith('.yml') || lower.endsWith('.tpl')) {
-                    results.push(fullPath);
-                }
+                results.push(fullPath);
             }
         }
     } catch {
@@ -842,22 +983,29 @@ export function isKustomizeDependency(filePath: string): boolean {
                 const kPath = path.join(currentDir, kFilename);
                 if (fs.existsSync(kPath)) {
                     let references: Set<string>;
+                    let uncertain: boolean;
                     try {
                         const content = fs.readFileSync(kPath, 'utf8');
                         const contentHash = computeSha256(content);
                         const cached = kustomizeCache.get(kPath);
                         if (cached && cached.contentHash === contentHash) {
                             references = cached.references;
+                            uncertain = cached.uncertain;
                         } else {
-                            references = extractKustomizeReferences(content);
+                            ({ references, uncertain } = analyzeKustomization(content));
                             if (kustomizeCache.size > 100) {
                                 kustomizeCache.clear();
                             }
-                            kustomizeCache.set(kPath, { contentHash, references });
+                            kustomizeCache.set(kPath, { contentHash, references, uncertain });
                         }
                     } catch {
                         kustomizeCache.delete(kPath);
                         continue;
+                    }
+
+                    // Constructs the scanner cannot interpret must never cause a false negative.
+                    if (uncertain) {
+                        return true;
                     }
 
                     // Exact normalized relative path matching:

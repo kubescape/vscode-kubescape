@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { shouldScanDocumentOnSave, createDidSaveMiddleware } from '../../server/manifestFilter';
-import { awaitJsonRpcResponse } from './rpcWait';
+import { awaitJsonRpcMessage, awaitJsonRpcResponse, awaitDiagnosticsForUri } from './rpcWait';
 
 function encodeFrame(msg: any): Buffer {
     const json = JSON.stringify(msg);
@@ -223,15 +223,12 @@ spec:
         }));
 
         // 5. Await publishDiagnostics notification
-        let diagMsg: any;
-        const deadline = Date.now() + 90000;
-        while (Date.now() < deadline) {
-            const msg = await nextMessage(60000);
-            if (msg.method === 'textDocument/publishDiagnostics') {
-                diagMsg = msg;
-                break;
-            }
-        }
+        const diagMsg = await awaitJsonRpcMessage(
+            nextMessage,
+            (m) => m.method === 'textDocument/publishDiagnostics',
+            'publishDiagnostics notification',
+            90000
+        );
 
         assert.ok(diagMsg, 'Expected textDocument/publishDiagnostics notification');
         assert.strictEqual(diagMsg.params?.uri, fileUri);
@@ -447,16 +444,8 @@ resources:
         );
 
         // Helper to await diagnostics for a given URI
-        const awaitDiagnostics = async (uri: string, timeoutMs = 90000): Promise<any[]> => {
-            const deadline = Date.now() + timeoutMs;
-            while (Date.now() < deadline) {
-                const msg = await nextMessage(60000);
-                if (msg.method === 'textDocument/publishDiagnostics' && msg.params?.uri === uri) {
-                    return msg.params?.diagnostics || [];
-                }
-            }
-            throw new Error(`Timeout waiting for publishDiagnostics for ${uri}`);
-        };
+        const awaitDiagnostics = (uri: string, timeoutMs = 90000): Promise<any[]> =>
+            awaitDiagnosticsForUri(nextMessage, uri, timeoutMs);
 
         // Helper to await matching response message while skipping unrelated notifications.
         // Bounded by one absolute deadline; each wait receives only the remaining time.
@@ -566,6 +555,77 @@ resources:
             jsonrpc: '2.0',
             method: 'exit',
         }));
+        const exitCode = await new Promise<number | null>((resolve) => {
+            proc.on('exit', (code) => resolve(code));
+        });
+        assert.strictEqual(exitCode, 0);
+    });
+
+    it('synchronizes a JSONC dependency without the server scanning it as a manifest', async () => {
+        const podPath = path.join(tmpDir, 'pod.yaml');
+        const podContent = `apiVersion: v1
+kind: Pod
+metadata:
+  name: jsonc-pod
+spec:
+  hostPID: true
+  containers:
+  - name: nginx
+    image: nginx:latest
+    securityContext:
+      privileged: true
+`;
+        await fs.promises.writeFile(podPath, podContent, 'utf8');
+        const jsoncPath = path.join(tmpDir, 'typedoc.json');
+        // Valid JSON content synchronized with the 'jsonc' language id. (Probed limitation: a workspace file
+        // that is not parseable JSON, e.g. one containing // comments, makes the Kubescape directory
+        // scan publish nothing regardless of the language id the client uses; that is CLI behavior.)
+        const jsoncContent = '{\n  "entryPoints": ["src"]\n}\n';
+        await fs.promises.writeFile(jsoncPath, jsoncContent, 'utf8');
+        const podUri = `file://${podPath}`;
+        const jsoncUri = `file://${jsoncPath}`;
+
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', id: 30, method: 'initialize',
+            params: { processId: process.pid, rootUri: `file://${tmpDir}`, capabilities: {} },
+        }));
+        assert.strictEqual((await nextMessage()).id, 30);
+        proc.stdin?.write(encodeFrame({ jsonrpc: '2.0', method: 'initialized', params: {} }));
+
+        // Open both documents the way the language client does for the extended selector
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', method: 'textDocument/didOpen',
+            params: { textDocument: { uri: podUri, languageId: 'yaml', version: 1, text: podContent } },
+        }));
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', method: 'textDocument/didOpen',
+            params: { textDocument: { uri: jsoncUri, languageId: 'jsonc', version: 1, text: jsoncContent } },
+        }));
+
+        // Saving the JSONC file triggers the usual full-workspace scan
+        proc.stdin?.write(encodeFrame({
+            jsonrpc: '2.0', method: 'textDocument/didSave', params: { textDocument: { uri: jsoncUri } },
+        }));
+
+        // Collect diagnostics until the pod's arrive; the JSONC file must never get findings
+        const seen: any[] = [];
+        const podDiags = await awaitJsonRpcMessage(
+            (t) => nextMessage(t).then((m) => { seen.push(m); return m; }),
+            (m) => m.method === 'textDocument/publishDiagnostics' && m.params?.uri === podUri,
+            'publishDiagnostics for pod.yaml',
+            90000
+        );
+        assert.ok(podDiags.params.diagnostics.length > 0, 'JSONC save must trigger the full-workspace scan');
+        for (const m of seen) {
+            if (m.method === 'textDocument/publishDiagnostics' && m.params?.uri === jsoncUri) {
+                assert.strictEqual(m.params.diagnostics.length, 0, 'JSONC content must not be reported as a manifest');
+            }
+        }
+
+        proc.stdin?.write(encodeFrame({ jsonrpc: '2.0', id: 31, method: 'shutdown' }));
+        const shutdownResp = await awaitJsonRpcResponse(nextMessage, 31, 30000);
+        assert.strictEqual(shutdownResp.result, null);
+        proc.stdin?.write(encodeFrame({ jsonrpc: '2.0', method: 'exit' }));
         const exitCode = await new Promise<number | null>((resolve) => {
             proc.on('exit', (code) => resolve(code));
         });

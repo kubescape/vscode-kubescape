@@ -15,6 +15,7 @@ import {
     createDidSaveMiddleware,
     createDidOpenMiddleware,
     createDidCloseMiddleware,
+    DOCUMENT_SELECTOR,
     ScannableDocument
 } from './manifestFilter';
 
@@ -217,10 +218,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         const serverOptions = createServerOptions(executablePath);
 
         const clientOptions: LanguageClientOptions = {
-            documentSelector: [
-                { scheme: 'file', language: 'yaml' },
-                { scheme: 'file', language: 'json' },
-            ],
+            documentSelector: DOCUMENT_SELECTOR,
             synchronize: {
                 configurationSection: 'kubescape',
             },
