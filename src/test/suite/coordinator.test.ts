@@ -241,8 +241,9 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
         const resolver = async () => '/usr/local/bin/kubescape';
         const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
 
-        // 1. A manual replacement begins (generation 1)
-        const promiseManual = coordinator.triggerRestart('manual');
+        // 1. A workspace replacement begins (generation 1). Unlike a manual restart it does not
+        // invalidate the running server, so only the pending-work guard prevents the skip below.
+        const promiseManual = coordinator.triggerRestart('workspace');
         await deferredManualStarted.promise;
 
         // 2. A configuration event arrives with the same executable and unchanged workspace folders (generation 2)
@@ -260,5 +261,39 @@ describe('ServerLifecycleCoordinator Generation & Invalidation Tests (Finding 3)
         assert.strictEqual(resultConfig, 'restarted', 'Newer config event must not skip while work is pending and must restart server');
         assert.strictEqual(mockClientManager.isRunning(), true, 'Server must remain running after replacement');
         assert.strictEqual(restartCallCount, 2, 'Both restart calls must have executed in client manager');
+    });
+
+    it('does not restart a healthy server when a stale config request is still in discovery', async () => {
+        running = true;
+        currentExe = '/usr/local/bin/kubescape';
+        let restartCallCount = 0;
+
+        mockClientManager = {
+            isRunning: () => running,
+            getCurrentExecutablePath: () => currentExe,
+            restart: async (exePath: string) => {
+                restartCallCount++;
+                currentExe = exePath;
+                return 'restarted' as const;
+            },
+        };
+
+        const deferredFirstDiscovery = new Deferred<string>();
+        let resolveCount = 0;
+        const resolver = () => {
+            resolveCount++;
+            return resolveCount === 1 ? deferredFirstDiscovery.promise : Promise.resolve('/usr/local/bin/kubescape');
+        };
+        const coordinator = new ServerLifecycleCoordinator(mockClientManager, mockOutputChannel, resolver);
+
+        const promiseStale = coordinator.triggerRestart('config');
+        const resultNewer = await coordinator.triggerRestart('config');
+
+        deferredFirstDiscovery.resolve('/usr/local/bin/kubescape');
+        const resultStale = await promiseStale;
+
+        assert.strictEqual(resultNewer, 'unchanged', 'Newer request for the running executable must not restart the server');
+        assert.strictEqual(resultStale, 'superseded', 'Stale request must be superseded');
+        assert.strictEqual(restartCallCount, 0, 'The healthy server must not be restarted');
     });
 });
