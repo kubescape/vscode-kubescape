@@ -631,7 +631,7 @@ configMapGenerator:
             assert.strictEqual(isCandidateForKubernetesScan(authDoc), false);
         });
 
-        it('confidently suppresses values.schema.json as a validation schema rather than workload values', () => {
+        it('forwards a save of values.schema.json, which decides whether the chart renders', () => {
             const chartDir = path.join(tempTestDir, 'schema-chart');
             fs.mkdirSync(chartDir);
             fs.writeFileSync(path.join(chartDir, 'Chart.yaml'), 'apiVersion: v2\nname: schemachart\nversion: 1.0.0\n');
@@ -650,9 +650,11 @@ configMapGenerator:
                 getText: () => schemaContent,
             };
 
-            // Schema edits do not change rendered workloads or security posture; must be suppressed
-            assert.strictEqual(isCandidateForKubernetesScan(doc), false, 'values.schema.json must be suppressed');
-            assert.strictEqual(shouldScanDocumentOnSave(doc), false);
+            // Helm validates the values against this schema before rendering and does not
+            // render a chart whose values fail it, so a schema edit can change the findings.
+            assert.strictEqual(isCandidateForKubernetesScan(doc), true, 'values.schema.json must be forwarded');
+            assert.strictEqual(shouldScanDocumentOnSave(doc), true);
+            assert.strictEqual(isHelmDependency(schemaPath), true);
         });
 
         it('traverses deeply nested directory architectures beyond 3 levels (depth = 5)', () => {
