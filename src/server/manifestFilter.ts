@@ -515,12 +515,11 @@ export function isCandidateForKubernetesScan(document: ScannableDocument): boole
         return true;
     }
 
-    // 2. Helm chart metadata and values files directly influence template rendering (YAML or JSON)
-    // Note: values.schema.json is a validation schema, not a workload values file, and is excluded.
-    if (lowerBasename !== 'values.schema.json') {
-        if (HELM_FILENAMES.has(lowerBasename) || (lowerBasename.startsWith('values.') && (lowerBasename.endsWith('.yaml') || lowerBasename.endsWith('.yml') || lowerBasename.endsWith('.json')))) {
-            return true;
-        }
+    // 2. Helm chart metadata and values files directly influence template rendering (YAML or JSON).
+    // That includes values.schema.json: Helm validates the values against it before rendering,
+    // and a chart whose values fail it is not rendered, so editing it can change the findings.
+    if (HELM_FILENAMES.has(lowerBasename) || (lowerBasename.startsWith('values.') && (lowerBasename.endsWith('.yaml') || lowerBasename.endsWith('.yml') || lowerBasename.endsWith('.json')))) {
+        return true;
     }
 
     // 3. Files inside a Helm templates/ directory
@@ -1043,11 +1042,9 @@ export function isHelmDependency(filePath: string): boolean {
         const basename = path.basename(filePath);
         const lowerBasename = basename.toLowerCase();
 
-        // Direct Helm values files (YAML or JSON). values.schema.json is excluded as it is a schema.
-        if (lowerBasename !== 'values.schema.json') {
-            if (HELM_FILENAMES.has(lowerBasename) || (lowerBasename.startsWith('values.') && (lowerBasename.endsWith('.yaml') || lowerBasename.endsWith('.yml') || lowerBasename.endsWith('.json')))) {
-                return true;
-            }
+        // Direct Helm values files (YAML or JSON), values.schema.json included.
+        if (HELM_FILENAMES.has(lowerBasename) || (lowerBasename.startsWith('values.') && (lowerBasename.endsWith('.yaml') || lowerBasename.endsWith('.yml') || lowerBasename.endsWith('.json')))) {
+            return true;
         }
 
         let currentDir = path.dirname(filePath);
