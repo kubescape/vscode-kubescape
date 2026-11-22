@@ -1947,9 +1947,27 @@ data:
             };
         }
 
-        it('the client document selector synchronizes yaml, json and jsonc file documents', () => {
+        it('the client document selector synchronizes yaml, json, jsonc and helm file documents', () => {
             const langs = DOCUMENT_SELECTOR.map((d) => `${d.scheme}:${d.language}`).sort();
-            assert.deepStrictEqual(langs, ['file:json', 'file:jsonc', 'file:yaml']);
+            assert.deepStrictEqual(langs, ['file:helm', 'file:json', 'file:jsonc', 'file:yaml']);
+        });
+
+        // The Kubernetes extension gives every file under a chart's templates/ directory the
+        // 'helm' language id. The selector syncs it, and its saves pass the filter.
+        it('forwards a save of a Helm template whose language id is helm', async () => {
+            const file = path.join(dir, 'chart', 'templates', 'deployment.yaml');
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            fs.writeFileSync(file, 'apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: {{ .Release.Name }}\n');
+            const template: ScannableDocument = {
+                uri: { scheme: 'file', fsPath: file, toString: () => `file://${file}` },
+                languageId: 'helm',
+                fileName: file,
+                getText: () => fs.readFileSync(file, 'utf8'),
+            };
+            const mw = createDidSaveMiddleware((d) => shouldScanDocumentOnSave(d, 'helm'));
+            let forwarded = false;
+            await mw(template as any, async () => { forwarded = true; });
+            assert.strictEqual(forwarded, true);
         });
 
         it('forwards a save of a Kustomize-referenced JSONC file', async () => {

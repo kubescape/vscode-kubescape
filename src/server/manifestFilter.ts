@@ -21,11 +21,17 @@ export interface ScannableDocument {
  * never reach the didSave filter even when a Kustomize generator or Helm template consumes
  * them. The server scans the workspace directory from disk on save, so synchronizing a
  * JSONC document does not make the server scan its buffer as a separate manifest.
+ *
+ * 'helm' is the language id the Kubernetes extension (ms-kubernetes-tools.vscode-kubernetes-tools)
+ * gives every file under a chart's templates/ directory. Without it, a template is never
+ * opened on the server, so it never shows the findings the server reports on it, and its
+ * saves never reach the didSave filter.
  */
 export const DOCUMENT_SELECTOR = [
     { scheme: 'file', language: 'yaml' },
     { scheme: 'file', language: 'json' },
     { scheme: 'file', language: 'jsonc' },
+    { scheme: 'file', language: 'helm' },
 ];
 
 /**
