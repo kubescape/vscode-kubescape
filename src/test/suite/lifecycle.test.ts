@@ -10,6 +10,7 @@ import {
     createServerOptions
 } from '../../server/queue';
 import {
+    launchServerProcess,
     isProcessAlive,
     waitForProcessExit,
     terminateProcess
@@ -1044,6 +1045,29 @@ describe('Process Alive Probing and Launch Arguments (Findings 1 & 2)', () => {
             assert.strictEqual(alive, true);
         } finally {
             process.kill = origKill;
+        }
+    });
+
+    it('prevents a timed-out launch from spawning after a retry owns the server', async () => {
+        let finishLookup!: (cwd: string | undefined) => void;
+        const slowLookup = new Promise<string | undefined>(resolve => { finishLookup = resolve; });
+        const executable = { command: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'] };
+        let timedOut = false;
+        const children: cp.ChildProcess[] = [];
+        const track = (child: cp.ChildProcess) => { children.push(child); };
+
+        const first = launchServerProcess(executable, slowLookup, () => timedOut, track);
+        timedOut = true;
+        try {
+            const retry = await launchServerProcess(executable, Promise.resolve(undefined), () => false, track);
+            finishLookup(undefined);
+            await assert.rejects(first, /cancelled before spawn/);
+            assert.deepStrictEqual(children, [retry]);
+            assert.ok(retry.pid && isProcessAlive(retry.pid));
+        } finally {
+            finishLookup(undefined);
+            await first.catch(() => {});
+            await Promise.all(children.map(child => terminateProcess(child)));
         }
     });
 
