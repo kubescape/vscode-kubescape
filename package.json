@@ -33,6 +33,8 @@
   "activationEvents": [
     "onLanguage:yaml",
     "onLanguage:json",
+    "onLanguage:jsonc",
+    "onLanguage:helm",
     "onCommand:kubescape.restartServer",
     "onCommand:kubescape.showOutput",
     "onCommand:kubescape.scanYaml"
