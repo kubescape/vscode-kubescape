@@ -1954,6 +1954,15 @@ data:
             assert.deepStrictEqual(langs, ['file:helm', 'file:json', 'file:jsonc', 'file:yaml']);
         });
 
+        it('activates the extension when any synchronized language opens first', () => {
+            const manifestPath = path.resolve(__dirname, '../../../package.json');
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            for (const { language } of DOCUMENT_SELECTOR) {
+                const event = `onLanguage:${language}`;
+                assert.ok(manifest.activationEvents.includes(event), `Missing activation event ${event}`);
+            }
+        });
+
         // The Kubernetes extension gives every file under a chart's templates/ directory the
         // 'helm' language id. The selector syncs it, and its saves pass the filter.
         it('forwards a save of a Helm template whose language id is helm', async () => {
