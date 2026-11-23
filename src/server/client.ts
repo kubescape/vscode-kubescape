@@ -1,5 +1,6 @@
 import * as cp from 'child_process';
 import * as vscode from 'vscode';
+import { promises as fs } from 'fs';
 import {
     LanguageClient,
     LanguageClientOptions,
@@ -7,7 +8,7 @@ import {
     State
 } from 'vscode-languageclient/node';
 import { LifecycleQueue, RestartResult, createServerOptions } from './queue';
-import { waitForProcessExit, terminateProcess, isProcessAlive } from './process';
+import { launchServerProcess, waitForProcessExit, terminateProcess, isProcessAlive } from './process';
 import {
     shouldScanDocumentOnSave,
     resetForceScanState,
@@ -189,6 +190,16 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         return started ? 'restarted' : 'superseded';
     }
 
+    private async getServerWorkingDirectory(): Promise<string | undefined> {
+        const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
+        if (folder?.scheme !== 'file') {
+            return undefined;
+        }
+        // Match the language client's fallback for missing or non-directory workspace roots.
+        const stat = await fs.lstat(folder.fsPath).catch(() => undefined);
+        return stat?.isDirectory() ? folder.fsPath : undefined;
+    }
+
     private async internalStart(
         executablePath: string,
         checkGeneration?: () => boolean
@@ -215,7 +226,14 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
 
         this.outputChannel.appendLine(`[LSP] Launching Kubescape Language Server: ${executablePath} lsp`);
 
-        const serverOptions = createServerOptions(executablePath);
+        let didTimeout = false;
+        const executable = createServerOptions(executablePath);
+        const serverOptions = (): Promise<cp.ChildProcess> => launchServerProcess(
+            executable,
+            this.getServerWorkingDirectory(),
+            () => didTimeout || this.isDisposed || this.client !== client,
+            child => { this.currentProcess = child; }
+        );
 
         const clientOptions: LanguageClientOptions = {
             documentSelector: DOCUMENT_SELECTOR,
@@ -244,7 +262,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
             },
         };
 
-        const client = this.clientFactory(
+        const client: LanguageClient = this.clientFactory(
             'kubescape',
             'Kubescape Language Server',
             serverOptions,
@@ -255,7 +273,6 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
         this.currentExecutablePath = executablePath;
 
         let initTimer: NodeJS.Timeout | null = null;
-        let didTimeout = false;
 
         const startPromise = client.start();
 
@@ -268,7 +285,7 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
 
         try {
             await Promise.race([startPromise, timeoutPromise]);
-            this.currentProcess = getChildProcess(client);
+            this.currentProcess = getChildProcess(client) ?? this.currentProcess;
 
             // Re-check disposal state after startup settles
             if (this.isDisposed || (checkGeneration && !checkGeneration())) {
@@ -316,7 +333,8 @@ export class KubescapeLanguageClientManager implements vscode.Disposable {
                 this.currentExecutablePath = null;
 
                 throw new Error(
-                    `Kubescape Language Server initialization timed out after ${this.initTimeoutMs}ms. The process was terminated.`
+                    `Kubescape Language Server initialization timed out after ${this.initTimeoutMs}ms. ` +
+                    (proc ? 'The process was terminated.' : 'The pending launch was cancelled.')
                 );
             }
 

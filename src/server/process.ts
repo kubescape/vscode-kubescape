@@ -1,4 +1,23 @@
 import * as cp from 'child_process';
+import { once } from 'events';
+import type { ServerProcessOptions } from './queue';
+
+export async function launchServerProcess(
+    executable: ServerProcessOptions,
+    workingDirectory: Promise<string | undefined>,
+    isCancelled: () => boolean,
+    trackProcess: (child: cp.ChildProcess) => void
+): Promise<cp.ChildProcess> {
+    // After the async cwd lookup, check cancellation and take ownership in one turn.
+    const cwd = await workingDirectory;
+    if (isCancelled()) {
+        throw new Error('Language server launch cancelled before spawn.');
+    }
+    const child = cp.spawn(executable.command, executable.args, { ...executable.options, cwd });
+    trackProcess(child);
+    await once(child, 'spawn');
+    return child;
+}
 
 /**
  * Checks whether a given process ID is alive in the operating system.
